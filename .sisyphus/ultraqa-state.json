@@ -1,0 +1,10 @@
+{
+  "active": true,
+  "goal_type": "custom",
+  "goal_pattern": "benchmark completes with performance data for 1MB to 10GB arrays",
+  "cycle": 1,
+  "max_cycles": 5,
+  "failures": [],
+  "started_at": "2026-01-20T03:30:00Z",
+  "task_description": "Benchmark unlockedpd with 2D arrays of different shapes and sizes from 1MB to 10GB"
+}
