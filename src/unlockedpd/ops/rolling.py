@@ -658,6 +658,82 @@ def _rolling_count_nogil_chunk(arr, result, start_col, end_col, window, min_peri
                 result[row, c] = np.nan
 
 
+@njit(nogil=True, cache=True)
+def _rolling_median_nogil_chunk(arr, result, start_col, end_col, window, min_periods):
+    """Rolling median using insertion sort - GIL released.
+
+    For each window, we maintain a sorted buffer and find the median.
+    O(n * window) per column, but with excellent cache locality.
+    """
+    n_rows = arr.shape[0]
+    for c in range(start_col, end_col):
+        # Buffer to hold window values (sorted)
+        buffer = np.empty(window, dtype=np.float64)
+
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                result[row, c] = np.nan
+                continue
+
+            # Fill buffer with window values
+            start = max(0, row - window + 1)
+            count = 0
+            for k in range(start, row + 1):
+                val = arr[k, c]
+                if not np.isnan(val):
+                    # Insertion sort into buffer
+                    i = count
+                    while i > 0 and buffer[i - 1] > val:
+                        buffer[i] = buffer[i - 1]
+                        i -= 1
+                    buffer[i] = val
+                    count += 1
+
+            if count >= min_periods:
+                # Get median from sorted buffer
+                if count % 2 == 1:
+                    result[row, c] = buffer[count // 2]
+                else:
+                    result[row, c] = (buffer[count // 2 - 1] + buffer[count // 2]) / 2.0
+            else:
+                result[row, c] = np.nan
+
+
+@njit(nogil=True, cache=True)
+def _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_periods, quantile):
+    """Rolling quantile using insertion sort - GIL released."""
+    n_rows = arr.shape[0]
+    for c in range(start_col, end_col):
+        buffer = np.empty(window, dtype=np.float64)
+
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                result[row, c] = np.nan
+                continue
+
+            start = max(0, row - window + 1)
+            count = 0
+            for k in range(start, row + 1):
+                val = arr[k, c]
+                if not np.isnan(val):
+                    i = count
+                    while i > 0 and buffer[i - 1] > val:
+                        buffer[i] = buffer[i - 1]
+                        i -= 1
+                    buffer[i] = val
+                    count += 1
+
+            if count >= min_periods:
+                # Linear interpolation for quantile
+                idx = quantile * (count - 1)
+                lower = int(idx)
+                upper = min(lower + 1, count - 1)
+                frac = idx - lower
+                result[row, c] = buffer[lower] * (1 - frac) + buffer[upper] * frac
+            else:
+                result[row, c] = np.nan
+
+
 @njit(parallel=True, cache=True)
 def _rolling_skew_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
     """Compute rolling skewness across columns in parallel using online moments."""
@@ -1091,6 +1167,48 @@ def _rolling_max_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     return result
 
 
+def _rolling_median_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+    """Ultra-fast rolling median using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _rolling_median_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
+              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+def _rolling_quantile_threadpool(arr: np.ndarray, window: int, min_periods: int, quantile: float) -> np.ndarray:
+    """Ultra-fast rolling quantile using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_periods, quantile)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
+              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
 # ============================================================================
@@ -1168,6 +1286,21 @@ def _rolling_count_dispatch(arr, window, min_periods):
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_count_2d_serial(arr, window, min_periods)
     return _rolling_count_2d(arr, window, min_periods)
+
+
+def _rolling_median_dispatch(arr, window, min_periods):
+    """Dispatch to ThreadPool for large arrays."""
+    if arr.size >= THREADPOOL_THRESHOLD:
+        return _rolling_median_threadpool(arr, window, min_periods)
+    # For smaller arrays, use serial version
+    return _rolling_median_threadpool(arr, window, min_periods)  # Always use optimized
+
+
+def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
+    """Dispatch to ThreadPool for large arrays."""
+    if arr.size >= THREADPOOL_THRESHOLD:
+        return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
+    return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
 
 
 # ============================================================================
@@ -1287,6 +1420,62 @@ def _make_rolling_var_wrapper():
     return wrapper
 
 
+def _make_rolling_median_wrapper():
+    """Create wrapper for rolling median."""
+    def wrapper(rolling_obj, *args, **kwargs):
+        obj = rolling_obj.obj
+        window = rolling_obj.window
+        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+
+        if window > len(obj):
+            if isinstance(obj, pd.DataFrame):
+                return obj.astype(float) * np.nan
+            else:
+                return obj.astype(float) * np.nan
+
+        if not isinstance(obj, pd.DataFrame):
+            raise TypeError("Optimization only for DataFrame")
+
+        numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+        if len(numeric_cols) == 0:
+            raise TypeError("No numeric columns to process")
+
+        arr = ensure_float64(numeric_df.values)
+        result = _rolling_median_dispatch(arr, window, min_periods)
+
+        return wrap_result(result, numeric_df, columns=numeric_cols,
+                          merge_non_numeric=True, original_df=obj)
+    return wrapper
+
+
+def _make_rolling_quantile_wrapper():
+    """Create wrapper for rolling quantile."""
+    def wrapper(rolling_obj, quantile, interpolation='linear', *args, **kwargs):
+        obj = rolling_obj.obj
+        window = rolling_obj.window
+        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+
+        if window > len(obj):
+            if isinstance(obj, pd.DataFrame):
+                return obj.astype(float) * np.nan
+            else:
+                return obj.astype(float) * np.nan
+
+        if not isinstance(obj, pd.DataFrame):
+            raise TypeError("Optimization only for DataFrame")
+
+        numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+        if len(numeric_cols) == 0:
+            raise TypeError("No numeric columns to process")
+
+        arr = ensure_float64(numeric_df.values)
+        result = _rolling_quantile_dispatch(arr, window, min_periods, quantile)
+
+        return wrap_result(result, numeric_df, columns=numeric_cols,
+                          merge_non_numeric=True, original_df=obj)
+    return wrapper
+
+
 # Create wrapper instances
 optimized_rolling_sum = _make_rolling_wrapper(_rolling_sum_2d, _rolling_sum_2d_centered, _rolling_sum_dispatch)
 optimized_rolling_mean = _make_rolling_wrapper(_rolling_mean_2d, _rolling_mean_2d_centered, _rolling_mean_dispatch)
@@ -1297,6 +1486,8 @@ optimized_rolling_max = _make_rolling_wrapper(_rolling_max_2d, None, _rolling_ma
 optimized_rolling_skew = _make_rolling_wrapper(_rolling_skew_2d, None, _rolling_skew_dispatch)
 optimized_rolling_kurt = _make_rolling_wrapper(_rolling_kurt_2d, None, _rolling_kurt_dispatch)
 optimized_rolling_count = _make_rolling_wrapper(_rolling_count_2d, None, _rolling_count_dispatch)
+optimized_rolling_median = _make_rolling_median_wrapper()
+optimized_rolling_quantile = _make_rolling_quantile_wrapper()
 
 
 def apply_rolling_patches():
@@ -1314,3 +1505,5 @@ def apply_rolling_patches():
     patch(Rolling, 'skew', optimized_rolling_skew)
     patch(Rolling, 'kurt', optimized_rolling_kurt)
     patch(Rolling, 'count', optimized_rolling_count)
+    patch(Rolling, 'median', optimized_rolling_median)
+    patch(Rolling, 'quantile', optimized_rolling_quantile)

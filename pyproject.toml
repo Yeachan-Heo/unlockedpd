@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "unlockedpd"
-version = "0.1.0"
+version = "0.2.0"
 description = "Transparent pandas performance optimization via Numba-accelerated parallel operations"
 readme = "README.md"
 license = "MIT"
@@ -41,9 +41,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/unlockedpd/unlockedpd"
-Documentation = "https://github.com/unlockedpd/unlockedpd#readme"
-Issues = "https://github.com/unlockedpd/unlockedpd/issues"
+Homepage = "https://github.com/Yeachan-Heo/unlockedpd"
+Documentation = "https://github.com/Yeachan-Heo/unlockedpd#readme"
+Issues = "https://github.com/Yeachan-Heo/unlockedpd/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/unlockedpd"]

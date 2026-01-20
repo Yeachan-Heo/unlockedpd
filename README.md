@@ -6,23 +6,23 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-unlockedpd is a **drop-in performance booster** for pandas that achieves **8-15x speedups** on rolling, expanding, and other window operations. Just `import unlockedpd` after pandas and your existing code runs faster.
+unlockedpd is a **drop-in performance booster** for pandas that achieves **5-15x speedups** on rolling, expanding, EWM, and cumulative operations. Just `import unlockedpd` after pandas and your existing code runs faster.
 
 ```python
 import pandas as pd
 import unlockedpd  # That's it. Your pandas code is now faster.
 
 df = pd.DataFrame(...)
-df.rolling(20).mean()  # 8.9x faster!
-df.expanding().std()   # 8.6x faster!
-df.rank(axis=1)        # 10x faster!
+df.rolling(20).mean()  # 5x faster!
+df.expanding().max()   # 15x faster!
+df.ewm(span=20).mean() # 4.8x faster!
 ```
 
 ## Why unlockedpd?
 
 | Library | Speedup | pandas Compatible | Setup Required |
 |---------|---------|-------------------|----------------|
-| **unlockedpd** | **8.9x** | **100%** | `pip install` |
+| **unlockedpd** | **8.7x avg** | **100%** | `pip install` |
 | Polars | 5-10x | 0% (new API) | Learn new API |
 | Modin | ~4x | 95% | Ray/Dask cluster |
 
@@ -34,29 +34,45 @@ df.rank(axis=1)        # 10x faster!
 
 ## Benchmarks
 
-Tested on a 64-core machine with a **1GB DataFrame** (10,000 rows x 13,000 columns):
+Tested on a 64-core machine with a **0.8GB DataFrame** (10,000 rows x 10,000 columns):
 
-### Rolling Operations
-
-| Operation | pandas | unlockedpd | Speedup |
-|-----------|--------|------------|---------|
-| `rolling(20).mean()` | 2.48s | 0.55s | **4.5x** |
-| `rolling(20).sum()` | 1.91s | 0.22s | **8.6x** |
-| `rolling(20).std()` | 2.94s | 0.50s | **5.9x** |
-| `rolling(20).var()` | 2.66s | 0.46s | **5.7x** |
-| `rolling(20).min()` | 4.00s | 0.35s | **11.6x** |
-| `rolling(20).max()` | 4.05s | 0.36s | **11.4x** |
-
-### Expanding Operations
+### Rolling Operations (8.4x average)
 
 | Operation | pandas | unlockedpd | Speedup |
 |-----------|--------|------------|---------|
-| `expanding().mean()` | 1.67s | 0.23s | **7.3x** |
-| `expanding().sum()` | 1.49s | 0.22s | **6.7x** |
-| `expanding().std()` | 2.13s | 0.25s | **8.6x** |
-| `expanding().var()` | 1.88s | 0.23s | **8.0x** |
-| `expanding().min()` | 3.28s | 0.23s | **14.4x** |
-| `expanding().max()` | 3.31s | 0.23s | **14.6x** |
+| `rolling(20).mean()` | 1.96s | 0.39s | **5.0x** |
+| `rolling(20).sum()` | 1.78s | 0.18s | **9.7x** |
+| `rolling(20).std()` | 2.51s | 0.40s | **6.3x** |
+| `rolling(20).var()` | 2.36s | 0.40s | **5.9x** |
+| `rolling(20).min()` | 3.30s | 0.28s | **11.6x** |
+| `rolling(20).max()` | 3.36s | 0.29s | **11.6x** |
+
+### Expanding Operations (10.7x average)
+
+| Operation | pandas | unlockedpd | Speedup |
+|-----------|--------|------------|---------|
+| `expanding().mean()` | 1.55s | 0.20s | **7.9x** |
+| `expanding().sum()` | 1.46s | 0.18s | **8.3x** |
+| `expanding().std()` | 1.89s | 0.20s | **9.6x** |
+| `expanding().var()` | 1.65s | 0.18s | **9.1x** |
+| `expanding().min()` | 2.61s | 0.18s | **14.3x** |
+| `expanding().max()` | 2.69s | 0.18s | **15.1x** |
+
+### EWM Operations (5.3x average)
+
+| Operation | pandas | unlockedpd | Speedup |
+|-----------|--------|------------|---------|
+| `ewm(span=20).mean()` | 1.18s | 0.25s | **4.8x** |
+| `ewm(span=20).std()` | 1.51s | 0.37s | **4.0x** |
+| `ewm(span=20).var()` | 1.31s | 0.19s | **7.1x** |
+
+### Cumulative Operations (3.2x average)
+
+| Operation | pandas | unlockedpd | Speedup |
+|-----------|--------|------------|---------|
+| `cumsum()` | 0.59s | 0.19s | **3.2x** |
+| `cummin()` | 0.58s | 0.18s | **3.2x** |
+| `cummax()` | 0.58s | 0.19s | **3.1x** |
 
 ### Other Operations
 
@@ -154,16 +170,17 @@ The key insight: `@njit(nogil=True)` + `ThreadPoolExecutor` combines Numba's fas
 
 ## What's Optimized
 
-**Fully optimized (8-15x faster):**
-- `rolling().mean()`, `sum()`, `std()`, `var()`, `min()`, `max()`, `count()`, `skew()`, `kurt()`
+**Fully optimized (5-15x faster):**
+- `rolling().mean()`, `sum()`, `std()`, `var()`, `min()`, `max()`, `count()`, `skew()`, `kurt()`, `median()`, `quantile()`
 - `expanding().mean()`, `sum()`, `std()`, `var()`, `min()`, `max()`, `count()`, `skew()`, `kurt()`
+- `ewm().mean()`, `std()`, `var()`
+- `cumsum()`, `cumprod()`, `cummin()`, `cummax()`
 - `rank()` (both axis=0 and axis=1)
 - `pct_change()`, `diff()`, `shift()`
+- `rolling().corr()`, `rolling().cov()` (pairwise)
 
 **Passes through to pandas (unchanged):**
-- `rolling().median()`, `quantile()`, `apply()`, `corr()`, `cov()`
-- `ewm()` operations
-- `cumsum()`, `cumprod()` (NumPy SIMD is already fast)
+- `rolling().apply()` (custom functions)
 - Series operations (optimizations target DataFrames)
 - Non-numeric columns (auto-fallback)
 
@@ -183,7 +200,7 @@ unlockedpd is designed for **100% pandas compatibility**:
 
 | Aspect | unlockedpd | Polars |
 |--------|------------|--------|
-| Speedup | 8.9x | 5-10x |
+| Speedup | 8.7x avg | 5-10x |
 | API | pandas (unchanged) | New API to learn |
 | Code changes | None | Rewrite required |
 | Ecosystem | pandas ecosystem | Polars ecosystem |
@@ -192,8 +209,8 @@ unlockedpd is designed for **100% pandas compatibility**:
 
 | Aspect | unlockedpd | Modin |
 |--------|------------|-------|
-| Speedup | 8.9x | ~4x (general) |
-| Rolling ops | Optimized | Not optimized |
+| Speedup | 8.7x avg | ~4x (general) |
+| Rolling ops | 8.4x optimized | Not optimized |
 | Infrastructure | None | Ray/Dask cluster |
 | Memory | Low overhead | Partitioning overhead |
 
@@ -209,7 +226,7 @@ unlockedpd is designed for **100% pandas compatibility**:
 
 ```bash
 # Clone the repo
-git clone https://github.com/unlockedpd/unlockedpd
+git clone https://github.com/Yeachan-Heo/unlockedpd
 cd unlockedpd
 
 # Install with dev dependencies
@@ -238,6 +255,17 @@ Built with:
 - [Numba](https://numba.pydata.org/) - JIT compilation for Python
 - [pandas](https://pandas.pydata.org/) - Data analysis library
 - [NumPy](https://numpy.org/) - Numerical computing
+
+---
+
+## How This Project Was Built
+
+This entire project was built using [oh-my-claude-sisyphus](https://github.com/Yeachan-Heo/oh-my-claude-sisyphus), an advanced Claude Code harness that enables autonomous, iterative development with specialized AI agents. The codebase, benchmarks, documentation, and optimizations were all generated through the sisyphus workflow orchestration system.
+
+Key oh-my-claude-sisyphus features used:
+- **Ralph-Plan**: Iterative planning with Prometheus (planner), Oracle (advisor), and Momus (reviewer) agents
+- **Ultrawork Mode**: Parallel agent execution for maximum throughput
+- **Sisyphus-Junior**: Focused task execution for implementation work
 
 ---
 

@@ -25,7 +25,7 @@ Configuration:
     # UNLOCKEDPD_PARALLEL_THRESHOLD=10000
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Import configuration
 from ._config import config
@@ -65,6 +65,7 @@ def _apply_all_patches():
     from .ops.transform import apply_transform_patches
     from .ops.rolling import apply_rolling_patches
     from .ops.expanding import apply_expanding_patches
+    from .ops.pairwise import apply_pairwise_patches
     # Transform operations: diff 1.0-1.7x, shift 1.0-1.5x, pct_change 11x
     apply_transform_patches()
 
@@ -77,16 +78,16 @@ def _apply_all_patches():
     # Expanding: 1.5x - 1.6x faster
     apply_expanding_patches()
 
-    # Cumulative ops (cumsum, cumprod, etc.): NOT patched
-    # NumPy's SIMD-optimized cumsum is faster than our parallel version
-    # Thread pool overhead exceeds the benefit of parallelization
-    # from .ops.cumulative import apply_cumulative_patches
-    # apply_cumulative_patches()
+    # Pairwise: rolling corr/cov
+    apply_pairwise_patches()
 
-    # Not enabled - marginal or no benefit:
-    # from .ops.ewm import apply_ewm_patches  # Same speed as pandas
-    # from .ops.stats import apply_stats_patches
-    # from .ops.pairwise import apply_pairwise_patches
+    # Cumulative ops with nogil kernels
+    from .ops.cumulative import apply_cumulative_patches
+    apply_cumulative_patches()
+
+    # EWM operations with nogil kernels
+    from .ops.ewm import apply_ewm_patches
+    apply_ewm_patches()
 
 
 def _warmup_all():
