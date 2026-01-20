@@ -245,6 +245,30 @@ Contributions are welcome! Areas of interest:
 - Documentation and examples
 - Bug reports and fixes
 
+## Changelog
+
+### v0.2.1 (2026-01-20)
+
+**Critical Bug Fix:**
+- **Fixed `pct_change()` NaN handling** to match pandas default behavior
+  - Previous versions treated `fill_method=None` as default, causing 5x more NaN values
+  - Now correctly defaults to `fill_method='pad'` (forward fill before computing), matching pandas
+  - This fix resolves "Weights are all zero" errors in downstream applications using unlockedpd
+
+**API:**
+- `pct_change(fill_method='pad')` - Default, matches pandas behavior (forward fills NaN before computing)
+- `pct_change(fill_method=None)` - No fill, fastest option (4.8x vs pandas), use when data has no NaN
+
+### v0.2.0 (2026-01-20)
+
+- Major performance improvements across all operations
+- Added EWM, expanding, cumulative, and pairwise operations
+- Improved parallel dispatch and memory layout optimization
+
+### v0.1.0 (2026-01-19)
+
+- Initial release with rolling, rank, and transform operations
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

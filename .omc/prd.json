@@ -1,0 +1,140 @@
+{
+  "project": "UnlockedPD Coverage Gaps",
+  "branchName": "ralph/coverage-gaps",
+  "description": "Implement missing operations to improve test coverage: expanding median/quantile, rolling sem, EWM corr/cov, and DataFrame aggregates (mean/sum/std/var)",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Enable stats patches in __init__.py",
+      "description": "As a developer, I want stats patches enabled in the main init file so that stats operations are available to users.",
+      "acceptanceCriteria": [
+        "Stats patches imported and applied in __init__.py",
+        "No syntax errors in modified files",
+        "Module imports successfully"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Completed by agent a49e36c"
+    },
+    {
+      "id": "US-002",
+      "title": "Implement expanding median operation",
+      "description": "As a data analyst, I want df.expanding().median() to work with Numba optimization so that I can compute expanding medians efficiently.",
+      "acceptanceCriteria": [
+        "expanding_median.py created with Numba implementation",
+        "Patches applied in expanding module",
+        "Tests pass for expanding median",
+        "Handles NaN values correctly with skipna parameter"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Implemented using quantile(0.5) reuse pattern. Patched in expanding.py"
+    },
+    {
+      "id": "US-003",
+      "title": "Implement expanding quantile operation",
+      "description": "As a data analyst, I want df.expanding().quantile(q) to work with Numba optimization so that I can compute expanding quantiles efficiently.",
+      "acceptanceCriteria": [
+        "expanding_quantile.py created with Numba implementation",
+        "Patches applied in expanding module",
+        "Tests pass for expanding quantile",
+        "Supports multiple quantile values",
+        "Handles NaN values correctly with skipna parameter"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Already implemented - just needed to add patch. Patched in expanding.py"
+    },
+    {
+      "id": "US-004",
+      "title": "Implement rolling sem (standard error of mean)",
+      "description": "As a statistician, I want df.rolling(N).sem() to work with Numba optimization so that I can compute rolling standard errors efficiently.",
+      "acceptanceCriteria": [
+        "rolling_sem.py created with Numba implementation",
+        "Patches applied in rolling module",
+        "Tests pass for rolling sem",
+        "Supports ddof parameter",
+        "Handles NaN values correctly with skipna parameter"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Already complete - implemented and patched in rolling.py"
+    },
+    {
+      "id": "US-005",
+      "title": "Implement EWM correlation",
+      "description": "As a data analyst, I want df.ewm().corr(other) to work with Numba optimization so that I can compute exponentially weighted correlations efficiently.",
+      "acceptanceCriteria": [
+        "ewm_corr.py created with Numba implementation",
+        "Patches applied in ewm module",
+        "Tests pass for EWM corr",
+        "Supports pairwise correlation",
+        "Handles NaN values correctly"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Implemented in ewm.py with nogil kernels, threadpool, pairwise support. Patched."
+    },
+    {
+      "id": "US-006",
+      "title": "Implement EWM covariance",
+      "description": "As a data analyst, I want df.ewm().cov(other) to work with Numba optimization so that I can compute exponentially weighted covariances efficiently.",
+      "acceptanceCriteria": [
+        "ewm_cov.py created with Numba implementation",
+        "Patches applied in ewm module",
+        "Tests pass for EWM cov",
+        "Supports pairwise covariance",
+        "Handles NaN values correctly"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Implemented in ewm.py with nogil kernels, threadpool, pairwise support. Patched."
+    },
+    {
+      "id": "US-007",
+      "title": "Implement DataFrame aggregate operations",
+      "description": "As a data analyst, I want df.mean(), df.sum(), df.std(), df.var() to work with Numba optimization on both axis=0 and axis=1 so that I can compute aggregates efficiently.",
+      "acceptanceCriteria": [
+        "aggregates.py created with Numba implementation for mean/sum/std/var",
+        "Supports both axis=0 and axis=1",
+        "Patches applied in __init__.py",
+        "Tests pass for all four aggregate operations",
+        "Handles NaN values correctly with skipna parameter",
+        "std/var support ddof parameter"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Created aggregates.py with all 4 operations, both axes, patched in __init__.py"
+    },
+    {
+      "id": "US-008",
+      "title": "Add comprehensive tests for new operations",
+      "description": "As a maintainer, I want comprehensive tests for all new operations so that I can verify correctness and prevent regressions.",
+      "acceptanceCriteria": [
+        "Tests added for expanding median/quantile",
+        "Tests added for rolling sem",
+        "Tests added for EWM corr/cov",
+        "Tests added for DataFrame aggregates",
+        "All tests pass",
+        "Coverage improved"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Tests added to test_expanding.py, test_ewm.py, and created test_aggregates.py"
+    },
+    {
+      "id": "US-009",
+      "title": "Verify all implementations and run full test suite",
+      "description": "As a maintainer, I want to run the full test suite and verify all implementations work correctly so that the release is production-ready.",
+      "acceptanceCriteria": [
+        "All unit tests pass",
+        "No regressions in existing functionality",
+        "All new operations work as expected",
+        "Code quality checks pass"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "92 tests passed, 0 failed. Oracle verified. NaN handling bug fixed. Commit 49b0caf"
+    }
+  ]
+}

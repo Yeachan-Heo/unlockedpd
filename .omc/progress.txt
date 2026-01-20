@@ -1,0 +1,123 @@
+# Ralph Progress Log
+Started: 2026-01-20T00:00:00Z
+
+## Codebase Patterns
+1. **Patch Pattern**: All optimizations use the patch() utility from _patch.py
+2. **Numba Patterns**: Use @njit(parallel=True) for parallel ops, @njit(nogil=True) for thread-safe ops
+3. **Dispatch Pattern**: Large arrays → threadpool, medium → parallel, small → serial
+4. **Wrapper Pattern**: Wrappers extract pandas object details, call Numba kernels, wrap results
+
+---
+
+## 2026-01-20 - US-001
+- Enabled stats patches in __init__.py
+- Files changed: src/unlockedpd/__init__.py
+- **Learnings:**
+  - Stats patches need to be imported and applied after basic module setup
+  - Docstring should reflect which operations are now patched
+
+---
+
+## 2026-01-20 - US-002
+- Implemented expanding median by reusing quantile(0.5)
+- Files changed: src/unlockedpd/ops/expanding.py
+- **Learnings:**
+  - Median can efficiently reuse quantile implementation with q=0.5
+  - No need to duplicate sorting logic
+
+---
+
+## 2026-01-20 - US-003
+- Added expanding quantile patch (implementation already existed)
+- Files changed: src/unlockedpd/ops/expanding.py
+- **Learnings:**
+  - Always check if implementation exists before rewriting
+  - Quantile was already implemented with nogil kernels and threadpool
+
+---
+
+## 2026-01-20 - US-004
+- Verified rolling sem is already complete
+- No changes needed
+- **Learnings:**
+  - Rolling sem was already implemented and patched in rolling.py
+
+---
+
+## 2026-01-20 - US-005 & US-006
+- Implemented EWM correlation and covariance
+- Files changed: src/unlockedpd/ops/ewm.py
+- Added:
+  - _ewm_cov_single_col_nogil() and _ewm_corr_single_col_nogil()
+  - _ewm_cov_matrix_nogil_chunk() and _ewm_corr_matrix_nogil_chunk()
+  - _ewm_cov_pairwise_threadpool() and _ewm_corr_pairwise_threadpool()
+  - optimized_ewm_cov() and optimized_ewm_corr() wrappers
+  - Patches in apply_ewm_patches()
+- **Learnings:**
+  - EWM formulas: Cov = EWM(XY) - EWM(X)*EWM(Y)
+  - Corr = Cov / sqrt(Var(X) * Var(Y))
+  - Support both adjust=True and adjust=False modes
+  - Pairwise operations use symmetric matrix with MultiIndex output
+
+---
+
+## 2026-01-20 - US-007
+- Implemented DataFrame aggregates (mean, sum, std, var)
+- Files changed:
+  - Created src/unlockedpd/ops/aggregates.py
+  - Modified src/unlockedpd/__init__.py
+- Added implementations for:
+  - mean/sum/std/var with axis=0 and axis=1
+  - skipna parameter support
+  - ddof parameter for std/var
+  - Parallel column/row processing with prange
+- **Learnings:**
+  - Aggregate operations are simpler than window operations
+  - Two-pass algorithm for std/var (mean first, then variance)
+  - Must handle empty results with np.nan
+
+---
+
+## 2026-01-20 - US-008
+- Added comprehensive tests for all new operations
+- Files changed:
+  - Modified tests/test_expanding.py
+  - Modified tests/test_ewm.py
+  - Created tests/test_aggregates.py
+- Added 25 new tests total
+- **Learnings:**
+  - Always remove placeholder skip decorators when enabling features
+  - Tests should cover basic, NaN handling, and parameter variations
+
+---
+
+## 2026-01-20 - US-009 (Final Verification)
+- Ran full test suite: 92 passed, 27 skipped, 0 failed
+- Oracle verification identified NaN handling bug in aggregates
+- Fixed std/var skipna=False bug using has_nan flag and break
+- All files committed to git: 49b0caf
+- **Learnings:**
+  - Oracle review catches subtle bugs tests may miss
+  - Continue vs break distinction critical for NaN handling
+  - Always run full suite after bug fixes to verify no regressions
+
+---
+
+## FINAL STATUS
+
+All 9 user stories COMPLETE and VERIFIED:
+✓ US-001: Stats patches enabled
+✓ US-002: Expanding median implemented
+✓ US-003: Expanding quantile patched
+✓ US-004: Rolling sem verified (already existed)
+✓ US-005: EWM correlation implemented
+✓ US-006: EWM covariance implemented
+✓ US-007: DataFrame aggregates implemented
+✓ US-008: Tests added (25 new tests)
+✓ US-009: Full verification passed
+
+Worktree: /home/bellman/Workspace/MyNumbaDataFrame-coverage-gaps
+Branch: coverage-gaps
+Commit: 49b0caf
+Test results: 92 passed, 0 failed
+
