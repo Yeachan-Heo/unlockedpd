@@ -734,6 +734,420 @@ optimized_ewm_var = _make_ewm_var_wrapper()
 optimized_ewm_std = _make_ewm_std_wrapper()
 
 
+# ============================================================================
+# Nogil kernels for EWM pairwise correlation/covariance
+# ============================================================================
+
+@njit(nogil=True, cache=True)
+def _ewm_cov_single_col_nogil(arr_x, arr_y, result, alpha, adjust, ignore_na, min_periods, bias):
+    """EWM covariance between two columns - GIL released.
+
+    Uses formula: Cov = EWM(XY) - EWM(X)*EWM(Y)
+    """
+    n_rows = len(arr_x)
+
+    if adjust:
+        ewm_x = 0.0
+        ewm_y = 0.0
+        ewm_xy = 0.0
+        weight_sum_x = 0.0
+        weight_sum_y = 0.0
+        weight_sum_xy = 0.0
+        weight = 1.0
+        nobs = 0
+
+        for row in range(n_rows):
+            vx = arr_x[row]
+            vy = arr_y[row]
+
+            # Both values must be non-NaN
+            if np.isnan(vx) or np.isnan(vy):
+                if not ignore_na:
+                    # Reset on NaN
+                    ewm_x = 0.0
+                    ewm_y = 0.0
+                    ewm_xy = 0.0
+                    weight_sum_x = 0.0
+                    weight_sum_y = 0.0
+                    weight_sum_xy = 0.0
+                    weight = 1.0
+                    nobs = 0
+                result[row] = np.nan
+            else:
+                ewm_x += weight * vx
+                ewm_y += weight * vy
+                ewm_xy += weight * vx * vy
+                weight_sum_x += weight
+                weight_sum_y += weight
+                weight_sum_xy += weight
+                weight *= (1.0 - alpha)
+                nobs += 1
+
+                if nobs >= min_periods:
+                    mean_x = ewm_x / weight_sum_x
+                    mean_y = ewm_y / weight_sum_y
+                    mean_xy = ewm_xy / weight_sum_xy
+                    cov = mean_xy - (mean_x * mean_y)
+
+                    if not bias:
+                        # Apply bias correction
+                        cov *= weight_sum_xy / (weight_sum_xy - 1.0) if weight_sum_xy > 1.0 else 1.0
+
+                    result[row] = cov
+                else:
+                    result[row] = np.nan
+    else:
+        # Recursive EWM
+        ewm_x = 0.0
+        ewm_y = 0.0
+        ewm_xy = 0.0
+        is_first = True
+        nobs = 0
+
+        for row in range(n_rows):
+            vx = arr_x[row]
+            vy = arr_y[row]
+
+            if np.isnan(vx) or np.isnan(vy):
+                if not ignore_na:
+                    is_first = True
+                    nobs = 0
+                result[row] = np.nan
+            else:
+                if is_first:
+                    ewm_x = vx
+                    ewm_y = vy
+                    ewm_xy = vx * vy
+                    is_first = False
+                else:
+                    ewm_x = alpha * vx + (1.0 - alpha) * ewm_x
+                    ewm_y = alpha * vy + (1.0 - alpha) * ewm_y
+                    ewm_xy = alpha * vx * vy + (1.0 - alpha) * ewm_xy
+
+                nobs += 1
+                if nobs >= min_periods:
+                    cov = ewm_xy - (ewm_x * ewm_y)
+                    result[row] = cov
+                else:
+                    result[row] = np.nan
+
+
+@njit(nogil=True, cache=True)
+def _ewm_corr_single_col_nogil(arr_x, arr_y, result, alpha, adjust, ignore_na, min_periods, is_diagonal):
+    """EWM correlation between two columns - GIL released.
+
+    Pearson correlation = Cov(X,Y) / (Std(X) * Std(Y))
+    """
+    n_rows = len(arr_x)
+
+    if adjust:
+        ewm_x = 0.0
+        ewm_y = 0.0
+        ewm_x2 = 0.0
+        ewm_y2 = 0.0
+        ewm_xy = 0.0
+        weight_sum = 0.0
+        weight = 1.0
+        nobs = 0
+
+        for row in range(n_rows):
+            vx = arr_x[row]
+            vy = arr_y[row]
+
+            if np.isnan(vx) or np.isnan(vy):
+                if not ignore_na:
+                    ewm_x = 0.0
+                    ewm_y = 0.0
+                    ewm_x2 = 0.0
+                    ewm_y2 = 0.0
+                    ewm_xy = 0.0
+                    weight_sum = 0.0
+                    weight = 1.0
+                    nobs = 0
+                result[row] = np.nan
+            else:
+                ewm_x += weight * vx
+                ewm_y += weight * vy
+                ewm_x2 += weight * vx * vx
+                ewm_y2 += weight * vy * vy
+                ewm_xy += weight * vx * vy
+                weight_sum += weight
+                weight *= (1.0 - alpha)
+                nobs += 1
+
+                if nobs >= min_periods:
+                    if is_diagonal:
+                        result[row] = 1.0
+                    else:
+                        mean_x = ewm_x / weight_sum
+                        mean_y = ewm_y / weight_sum
+                        mean_x2 = ewm_x2 / weight_sum
+                        mean_y2 = ewm_y2 / weight_sum
+                        mean_xy = ewm_xy / weight_sum
+
+                        var_x = mean_x2 - (mean_x * mean_x)
+                        var_y = mean_y2 - (mean_y * mean_y)
+                        cov = mean_xy - (mean_x * mean_y)
+
+                        if var_x > 1e-14 and var_y > 1e-14:
+                            result[row] = cov / np.sqrt(var_x * var_y)
+                        else:
+                            result[row] = np.nan
+                else:
+                    result[row] = np.nan
+    else:
+        # Recursive EWM
+        ewm_x = 0.0
+        ewm_y = 0.0
+        ewm_x2 = 0.0
+        ewm_y2 = 0.0
+        ewm_xy = 0.0
+        is_first = True
+        nobs = 0
+
+        for row in range(n_rows):
+            vx = arr_x[row]
+            vy = arr_y[row]
+
+            if np.isnan(vx) or np.isnan(vy):
+                if not ignore_na:
+                    is_first = True
+                    nobs = 0
+                result[row] = np.nan
+            else:
+                if is_first:
+                    ewm_x = vx
+                    ewm_y = vy
+                    ewm_x2 = vx * vx
+                    ewm_y2 = vy * vy
+                    ewm_xy = vx * vy
+                    is_first = False
+                else:
+                    ewm_x = alpha * vx + (1.0 - alpha) * ewm_x
+                    ewm_y = alpha * vy + (1.0 - alpha) * ewm_y
+                    ewm_x2 = alpha * vx * vx + (1.0 - alpha) * ewm_x2
+                    ewm_y2 = alpha * vy * vy + (1.0 - alpha) * ewm_y2
+                    ewm_xy = alpha * vx * vy + (1.0 - alpha) * ewm_xy
+
+                nobs += 1
+                if nobs >= min_periods:
+                    if is_diagonal:
+                        result[row] = 1.0
+                    else:
+                        var_x = ewm_x2 - (ewm_x * ewm_x)
+                        var_y = ewm_y2 - (ewm_y * ewm_y)
+                        cov = ewm_xy - (ewm_x * ewm_y)
+
+                        if var_x > 1e-14 and var_y > 1e-14:
+                            result[row] = cov / np.sqrt(var_x * var_y)
+                        else:
+                            result[row] = np.nan
+                else:
+                    result[row] = np.nan
+
+
+@njit(nogil=True, cache=True)
+def _ewm_cov_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair, pairs_i, pairs_j, alpha, adjust, ignore_na, min_periods, bias, n_rows):
+    """EWM covariance for multiple column pairs - GIL released."""
+    for p in range(start_pair, end_pair):
+        i = pairs_i[p]
+        j = pairs_j[p]
+        col_x = arr[:, i]
+        col_y = arr[:, j]
+        result_col = result_flat[:, p]
+        _ewm_cov_single_col_nogil(col_x, col_y, result_col, alpha, adjust, ignore_na, min_periods, bias)
+
+
+@njit(nogil=True, cache=True)
+def _ewm_corr_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair, pairs_i, pairs_j, alpha, adjust, ignore_na, min_periods, n_rows):
+    """EWM correlation for multiple column pairs - GIL released."""
+    for p in range(start_pair, end_pair):
+        i = pairs_i[p]
+        j = pairs_j[p]
+        col_x = arr[:, i]
+        col_y = arr[:, j]
+        result_col = result_flat[:, p]
+        is_diagonal = (i == j)
+        _ewm_corr_single_col_nogil(col_x, col_y, result_col, alpha, adjust, ignore_na, min_periods, is_diagonal)
+
+
+# ============================================================================
+# ThreadPool functions for EWM pairwise operations
+# ============================================================================
+
+def _ewm_cov_pairwise_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
+    """EWM covariance matrix using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+
+    pairs = []
+    for i in range(n_cols):
+        for j in range(i, n_cols):
+            pairs.append((i, j))
+
+    n_pairs = len(pairs)
+    pairs_i = np.array([p[0] for p in pairs], dtype=np.int64)
+    pairs_j = np.array([p[1] for p in pairs], dtype=np.int64)
+
+    result_flat = np.empty((n_rows, n_pairs), dtype=np.float64)
+    result_flat[:] = np.nan
+
+    chunk_size = max(1, (n_pairs + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_pair, end_pair = args
+        _ewm_cov_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair,
+                                    pairs_i, pairs_j, alpha, adjust, ignore_na, min_periods, bias, n_rows)
+
+    chunks = [(k * chunk_size, min((k + 1) * chunk_size, n_pairs))
+              for k in range(THREADPOOL_WORKERS) if k * chunk_size < n_pairs]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    # Reshape to (n_rows, n_cols, n_cols) symmetric matrix
+    result = np.empty((n_rows, n_cols, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    for idx, (i, j) in enumerate(pairs):
+        result[:, i, j] = result_flat[:, idx]
+        if i != j:
+            result[:, j, i] = result_flat[:, idx]  # Symmetric
+
+    return result
+
+
+def _ewm_corr_pairwise_threadpool(arr, alpha, adjust, ignore_na, min_periods):
+    """EWM correlation matrix using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+
+    pairs = []
+    for i in range(n_cols):
+        for j in range(i, n_cols):
+            pairs.append((i, j))
+
+    n_pairs = len(pairs)
+    pairs_i = np.array([p[0] for p in pairs], dtype=np.int64)
+    pairs_j = np.array([p[1] for p in pairs], dtype=np.int64)
+
+    result_flat = np.empty((n_rows, n_pairs), dtype=np.float64)
+    result_flat[:] = np.nan
+
+    chunk_size = max(1, (n_pairs + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_pair, end_pair = args
+        _ewm_corr_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair,
+                                     pairs_i, pairs_j, alpha, adjust, ignore_na, min_periods, n_rows)
+
+    chunks = [(k * chunk_size, min((k + 1) * chunk_size, n_pairs))
+              for k in range(THREADPOOL_WORKERS) if k * chunk_size < n_pairs]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    result = np.empty((n_rows, n_cols, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    for idx, (i, j) in enumerate(pairs):
+        result[:, i, j] = result_flat[:, idx]
+        if i != j:
+            result[:, j, i] = result_flat[:, idx]  # Symmetric
+
+    return result
+
+
+# ============================================================================
+# Wrapper functions for pandas EWM objects (corr/cov)
+# ============================================================================
+
+def optimized_ewm_cov(ewm_obj, other=None, pairwise=None, bias=False, *args, **kwargs):
+    """Optimized EWM covariance."""
+    obj = ewm_obj.obj
+
+    # Only optimize DataFrame pairwise case
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    if other is not None:
+        raise TypeError("other parameter not supported, use pairwise=True")
+
+    if pairwise is False:
+        raise TypeError("Only pairwise=True is optimized")
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns to process")
+
+    # Extract EWM parameters
+    alpha = _get_alpha(
+        span=ewm_obj.span,
+        halflife=ewm_obj.halflife,
+        alpha=ewm_obj.alpha,
+        com=ewm_obj.com
+    )
+    adjust = ewm_obj.adjust
+    ignore_na = ewm_obj.ignore_na
+    min_periods = ewm_obj.min_periods if ewm_obj.min_periods is not None else 0
+
+    arr = ensure_float64(numeric_df.values)
+    result_3d = _ewm_cov_pairwise_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
+
+    # Convert to pandas format: MultiIndex rows (timestamp, column), single columns
+    n_rows = len(obj)
+    n_cols = len(numeric_cols)
+
+    row_tuples = [(idx, col) for idx in obj.index for col in numeric_cols]
+    multi_index = pd.MultiIndex.from_tuples(row_tuples)
+
+    # Reshape: from (n_rows, n_cols, n_cols) to (n_rows * n_cols, n_cols)
+    result_2d = result_3d.reshape(n_rows * n_cols, n_cols)
+
+    return pd.DataFrame(result_2d, index=multi_index, columns=numeric_cols)
+
+
+def optimized_ewm_corr(ewm_obj, other=None, pairwise=None, *args, **kwargs):
+    """Optimized EWM correlation."""
+    obj = ewm_obj.obj
+
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    if other is not None:
+        raise TypeError("other parameter not supported, use pairwise=True")
+
+    if pairwise is False:
+        raise TypeError("Only pairwise=True is optimized")
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns to process")
+
+    # Extract EWM parameters
+    alpha = _get_alpha(
+        span=ewm_obj.span,
+        halflife=ewm_obj.halflife,
+        alpha=ewm_obj.alpha,
+        com=ewm_obj.com
+    )
+    adjust = ewm_obj.adjust
+    ignore_na = ewm_obj.ignore_na
+    min_periods = ewm_obj.min_periods if ewm_obj.min_periods is not None else 0
+
+    arr = ensure_float64(numeric_df.values)
+    result_3d = _ewm_corr_pairwise_threadpool(arr, alpha, adjust, ignore_na, min_periods)
+
+    # Convert to pandas format
+    n_rows = len(obj)
+    n_cols = len(numeric_cols)
+
+    row_tuples = [(idx, col) for idx in obj.index for col in numeric_cols]
+    multi_index = pd.MultiIndex.from_tuples(row_tuples)
+
+    result_2d = result_3d.reshape(n_rows * n_cols, n_cols)
+
+    return pd.DataFrame(result_2d, index=multi_index, columns=numeric_cols)
+
+
 def apply_ewm_patches():
     """Apply all EWM operation patches to pandas."""
     from .._patch import patch
@@ -743,3 +1157,5 @@ def apply_ewm_patches():
     patch(ExponentialMovingWindow, 'mean', optimized_ewm_mean)
     patch(ExponentialMovingWindow, 'var', optimized_ewm_var)
     patch(ExponentialMovingWindow, 'std', optimized_ewm_std)
+    patch(ExponentialMovingWindow, 'corr', optimized_ewm_corr)
+    patch(ExponentialMovingWindow, 'cov', optimized_ewm_cov)

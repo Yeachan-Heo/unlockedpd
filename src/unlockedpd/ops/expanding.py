@@ -688,6 +688,35 @@ def _expanding_count_nogil_chunk(arr, result, start_col, end_col, min_periods):
                 result[row, c] = np.nan
 
 
+@njit(nogil=True, cache=True)
+def _expanding_quantile_nogil_chunk(arr, result, start_col, end_col, min_periods, quantile):
+    """Expanding quantile using insertion sort with linear interpolation."""
+    n_rows = arr.shape[0]
+    for c in range(start_col, end_col):
+        buffer = np.empty(n_rows, dtype=np.float64)
+
+        for row in range(n_rows):
+            count = 0
+            for k in range(row + 1):
+                val = arr[k, c]
+                if not np.isnan(val):
+                    i = count
+                    while i > 0 and buffer[i - 1] > val:
+                        buffer[i] = buffer[i - 1]
+                        i -= 1
+                    buffer[i] = val
+                    count += 1
+
+            if count >= min_periods:
+                idx = quantile * (count - 1)
+                lower = int(idx)
+                upper = min(lower + 1, count - 1)
+                frac = idx - lower
+                result[row, c] = buffer[lower] * (1 - frac) + buffer[upper] * frac
+            else:
+                result[row, c] = np.nan
+
+
 # ============================================================================
 # ThreadPool + NumPy cumsum trick for ultra-fast expanding (5x+ speedup)
 # Key insight: NumPy releases GIL, so ThreadPoolExecutor achieves true parallelism
@@ -839,6 +868,27 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     return result
 
 
+def _expanding_quantile_threadpool(arr, min_periods, quantile):
+    """Expanding quantile using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _expanding_quantile_nogil_chunk(arr, result, start_col, end_col, min_periods, quantile)
+
+    chunks = [(k * chunk_size, min((k + 1) * chunk_size, n_cols))
+              for k in range(THREADPOOL_WORKERS) if k * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
 # ============================================================================
@@ -916,6 +966,19 @@ def _expanding_kurt_dispatch(arr, min_periods):
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_kurt_2d_serial(arr, min_periods)
     return _expanding_kurt_2d(arr, min_periods)
+
+
+def _expanding_quantile_dispatch(arr, min_periods, quantile):
+    """Dispatch to appropriate implementation based on array size."""
+    n_elements = arr.size
+    if n_elements >= THREADPOOL_THRESHOLD:
+        return _expanding_quantile_threadpool(arr, min_periods, quantile)
+    else:
+        n_rows, n_cols = arr.shape
+        result = np.empty((n_rows, n_cols), dtype=np.float64)
+        result[:] = np.nan
+        _expanding_quantile_nogil_chunk(arr, result, 0, n_cols, min_periods, quantile)
+        return result
 
 
 # ============================================================================
@@ -1017,6 +1080,47 @@ optimized_expanding_skew = _make_expanding_wrapper(_expanding_skew_dispatch)
 optimized_expanding_kurt = _make_expanding_wrapper(_expanding_kurt_dispatch)
 
 
+def optimized_expanding_quantile(expanding_obj, quantile, interpolation='linear', *args, **kwargs):
+    """Optimized expanding quantile."""
+    if interpolation != 'linear':
+        raise TypeError(f"interpolation='{interpolation}' not supported, use pandas")
+
+    obj = expanding_obj.obj
+    min_periods = expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns to process")
+
+    arr = ensure_float64(numeric_df.values)
+    result = _expanding_quantile_dispatch(arr, min_periods, quantile)
+
+    return wrap_result(result, numeric_df, columns=numeric_cols,
+                      merge_non_numeric=True, original_df=obj)
+
+
+def optimized_expanding_median(expanding_obj, *args, **kwargs):
+    """Optimized expanding median (reuses quantile with q=0.5)."""
+    obj = expanding_obj.obj
+    min_periods = expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns to process")
+
+    arr = ensure_float64(numeric_df.values)
+    result = _expanding_quantile_dispatch(arr, min_periods, 0.5)
+
+    return wrap_result(result, numeric_df, columns=numeric_cols,
+                      merge_non_numeric=True, original_df=obj)
+
+
 def apply_expanding_patches():
     """Apply all expanding operation patches to pandas."""
     from .._patch import patch
@@ -1032,3 +1136,5 @@ def apply_expanding_patches():
     patch(Expanding, 'count', optimized_expanding_count)
     patch(Expanding, 'skew', optimized_expanding_skew)
     patch(Expanding, 'kurt', optimized_expanding_kurt)
+    patch(Expanding, 'quantile', optimized_expanding_quantile)
+    patch(Expanding, 'median', optimized_expanding_median)

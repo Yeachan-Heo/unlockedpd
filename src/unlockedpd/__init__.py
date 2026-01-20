@@ -55,11 +55,11 @@ def _apply_all_patches():
     - diff: 1.0x - 1.7x faster (shape-dependent)
     - shift: 1.0x - 1.5x faster (shape-dependent)
 
+    Shape-dependent benefits:
+    - stats (skew, kurt, sem): Enabled - benefits wide DataFrames with parallel column processing
+
     Not patched (marginal or negative benefit):
     - cumulative (cumsum, cumprod, etc.): NumPy SIMD is faster
-    - ewm: Same speed as pandas (no benefit)
-    - stats: Marginal benefit
-    - pairwise: Complex semantics
     """
     from .ops.rank import apply_rank_patches
     from .ops.transform import apply_transform_patches
@@ -88,6 +88,14 @@ def _apply_all_patches():
     # EWM operations with nogil kernels
     from .ops.ewm import apply_ewm_patches
     apply_ewm_patches()
+
+    # Stats operations with parallel column processing
+    from .ops.stats import apply_stats_patches
+    apply_stats_patches()
+
+    # DataFrame aggregate operations
+    from .ops.aggregates import apply_aggregate_patches
+    apply_aggregate_patches()
 
 
 def _warmup_all():

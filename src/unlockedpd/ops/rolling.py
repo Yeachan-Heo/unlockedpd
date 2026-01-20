@@ -591,6 +591,53 @@ def _rolling_var_nogil_chunk(arr, result, start_col, end_col, window, min_period
 
 
 @njit(nogil=True, cache=True)
+def _rolling_sem_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof):
+    """Rolling standard error of mean - GIL released.
+
+    SEM = std / sqrt(count)
+    """
+    n_rows = arr.shape[0]
+    for c in range(start_col, end_col):
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                result[row, c] = np.nan
+                continue
+
+            start = max(0, row - window + 1)
+
+            # First pass: compute mean
+            total = 0.0
+            count = 0
+            for k in range(start, row + 1):
+                val = arr[k, c]
+                if not np.isnan(val):
+                    total += val
+                    count += 1
+
+            if count < min_periods:
+                result[row, c] = np.nan
+                continue
+
+            mean = total / count
+
+            # Second pass: compute variance
+            sum_sq = 0.0
+            for k in range(start, row + 1):
+                val = arr[k, c]
+                if not np.isnan(val):
+                    diff = val - mean
+                    sum_sq += diff * diff
+
+            if count <= ddof:
+                result[row, c] = np.nan
+            else:
+                var = sum_sq / (count - ddof)
+                std = np.sqrt(var)
+                sem = std / np.sqrt(count)
+                result[row, c] = sem
+
+
+@njit(nogil=True, cache=True)
 def _rolling_min_nogil_chunk(arr, result, start_col, end_col, window, min_periods):
     """Rolling min - GIL released."""
     n_rows = arr.shape[0]
@@ -1115,6 +1162,27 @@ def _rolling_var_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     return result
 
 
+def _rolling_sem_threadpool(arr, window, min_periods, ddof):
+    """Rolling SEM using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _rolling_sem_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
+
+    chunks = [(k * chunk_size, min((k + 1) * chunk_size, n_cols))
+              for k in range(THREADPOOL_WORKERS) if k * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
 def _rolling_min_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
     """Ultra-fast rolling min using ThreadPool + nogil Numba kernels.
 
@@ -1303,6 +1371,19 @@ def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
     return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
 
 
+def _rolling_sem_dispatch(arr, window, min_periods, ddof=1):
+    """Dispatch to appropriate implementation based on array size."""
+    n_elements = arr.size
+    if n_elements >= THREADPOOL_THRESHOLD:
+        return _rolling_sem_threadpool(arr, window, min_periods, ddof)
+    else:
+        n_rows, n_cols = arr.shape
+        result = np.empty((n_rows, n_cols), dtype=np.float64)
+        result[:] = np.nan
+        _rolling_sem_nogil_chunk(arr, result, 0, n_cols, window, min_periods, ddof)
+        return result
+
+
 # ============================================================================
 # Wrapper functions for pandas Rolling objects
 # ============================================================================
@@ -1476,6 +1557,26 @@ def _make_rolling_quantile_wrapper():
     return wrapper
 
 
+def optimized_rolling_sem(rolling_obj, ddof=1, *args, **kwargs):
+    """Optimized rolling standard error of mean."""
+    obj = rolling_obj.obj
+    window = rolling_obj.window
+    min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+
+    if not isinstance(obj, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns to process")
+
+    arr = ensure_float64(numeric_df.values)
+    result = _rolling_sem_dispatch(arr, window, min_periods, ddof)
+
+    return wrap_result(result, numeric_df, columns=numeric_cols,
+                      merge_non_numeric=True, original_df=obj)
+
+
 # Create wrapper instances
 optimized_rolling_sum = _make_rolling_wrapper(_rolling_sum_2d, _rolling_sum_2d_centered, _rolling_sum_dispatch)
 optimized_rolling_mean = _make_rolling_wrapper(_rolling_mean_2d, _rolling_mean_2d_centered, _rolling_mean_dispatch)
@@ -1507,3 +1608,4 @@ def apply_rolling_patches():
     patch(Rolling, 'count', optimized_rolling_count)
     patch(Rolling, 'median', optimized_rolling_median)
     patch(Rolling, 'quantile', optimized_rolling_quantile)
+    patch(Rolling, 'sem', optimized_rolling_sem)
