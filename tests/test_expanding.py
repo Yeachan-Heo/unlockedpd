@@ -7,7 +7,6 @@ import numpy as np
 class TestExpandingMean:
     """Tests for expanding().mean()"""
 
-    @pytest.mark.skip(reason="Expanding operations not yet implemented")
     def test_basic_expanding_mean(self):
         """Test basic expanding mean matches pandas."""
         import unlockedpd
@@ -22,7 +21,6 @@ class TestExpandingMean:
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="Expanding operations not yet implemented")
     def test_expanding_mean_with_nan(self):
         """Test expanding mean handles NaN correctly."""
         import unlockedpd
@@ -40,7 +38,6 @@ class TestExpandingMean:
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="Expanding operations not yet implemented")
     def test_expanding_mean_min_periods(self):
         """Test expanding mean with min_periods."""
         import unlockedpd
@@ -59,7 +56,6 @@ class TestExpandingMean:
 class TestExpandingSum:
     """Tests for expanding().sum()"""
 
-    @pytest.mark.skip(reason="Expanding operations not yet implemented")
     def test_basic_expanding_sum(self):
         """Test basic expanding sum matches pandas."""
         import unlockedpd
@@ -78,7 +74,6 @@ class TestExpandingSum:
 class TestExpandingStd:
     """Tests for expanding().std()"""
 
-    @pytest.mark.skip(reason="Expanding operations not yet implemented")
     def test_basic_expanding_std(self):
         """Test basic expanding std matches pandas."""
         import unlockedpd

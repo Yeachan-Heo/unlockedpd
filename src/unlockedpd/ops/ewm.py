@@ -94,9 +94,9 @@ def _ewm_mean_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, m
     for col in prange(n_cols):
         if adjust:
             # Adjusted EWM: y_t = (x_t + (1-alpha)*x_{t-1} + ...) / (1 + (1-alpha) + ...)
+            # New observations get weight 1.0, older observations decay by (1-alpha)
             weighted_sum = 0.0
             weight_sum = 0.0
-            weight = 1.0
             nobs = 0
 
             for row in range(n_rows):
@@ -104,15 +104,17 @@ def _ewm_mean_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, m
 
                 if np.isnan(val):
                     if not ignore_na:
-                        # Reset on NaN if not ignoring
-                        weighted_sum = 0.0
-                        weight_sum = 0.0
-                        weight = 1.0
-                        nobs = 0
+                        # Decay weights even for NaN, but don't add to sum
+                        weighted_sum *= (1.0 - alpha)
+                        weight_sum *= (1.0 - alpha)
+                    # When ignore_na=True, don't decay weights (skip entirely)
+                    # Output current EWM if we have enough observations
+                    if nobs >= min_periods and weight_sum > 0:
+                        result[row, col] = weighted_sum / weight_sum
                 else:
-                    weighted_sum += weight * val
-                    weight_sum += weight
-                    weight *= (1.0 - alpha)
+                    # Decay existing sums first, then add new observation with weight 1.0
+                    weighted_sum = (1.0 - alpha) * weighted_sum + val
+                    weight_sum = (1.0 - alpha) * weight_sum + 1.0
                     nobs += 1
 
                     if nobs >= min_periods:
@@ -168,11 +170,10 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
 
     for col in prange(n_cols):
         if adjust:
-            # Track both x and x^2
+            # Track both x and x^2 - new observations get weight 1.0, older decay by (1-alpha)
             weighted_sum = 0.0
             weighted_sum_sq = 0.0
             weight_sum = 0.0
-            weight = 1.0
             nobs = 0
 
             for row in range(n_rows):
@@ -180,25 +181,33 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
 
                 if np.isnan(val):
                     if not ignore_na:
-                        weighted_sum = 0.0
-                        weighted_sum_sq = 0.0
-                        weight_sum = 0.0
-                        weight = 1.0
-                        nobs = 0
+                        # Decay weights even for NaN, but don't add to sum
+                        weighted_sum *= (1.0 - alpha)
+                        weighted_sum_sq *= (1.0 - alpha)
+                        weight_sum *= (1.0 - alpha)
+                    # When ignore_na=True, don't decay weights
+                    # Output current variance if we have enough observations
+                    if nobs >= min_periods and nobs > 1 and weight_sum > 0:  # Variance requires at least 2 observations
+                        mean = weighted_sum / weight_sum
+                        mean_sq = weighted_sum_sq / weight_sum
+                        var = mean_sq - mean * mean
+                        if not bias:
+                            var *= weight_sum / (weight_sum - 1.0 + alpha)
+                        result[row, col] = max(0.0, var)
                 else:
-                    weighted_sum += weight * val
-                    weighted_sum_sq += weight * val * val
-                    weight_sum += weight
-                    weight *= (1.0 - alpha)
+                    # Decay existing sums first, then add new observation with weight 1.0
+                    weighted_sum = (1.0 - alpha) * weighted_sum + val
+                    weighted_sum_sq = (1.0 - alpha) * weighted_sum_sq + val * val
+                    weight_sum = (1.0 - alpha) * weight_sum + 1.0
                     nobs += 1
 
-                    if nobs >= min_periods:
+                    if nobs >= min_periods and nobs > 1:  # Variance requires at least 2 observations
                         mean = weighted_sum / weight_sum
                         mean_sq = weighted_sum_sq / weight_sum
                         var = mean_sq - mean * mean
 
                         # Bias correction for adjusted method
-                        if not bias and nobs > 1:
+                        if not bias:
                             # Apply bias correction similar to pandas
                             var *= weight_sum / (weight_sum - 1.0 + alpha)
 
@@ -273,9 +282,9 @@ def _ewm_mean_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: 
 
     for col in range(n_cols):
         if adjust:
+            # New observations get weight 1.0, older observations decay by (1-alpha)
             weighted_sum = 0.0
             weight_sum = 0.0
-            weight = 1.0
             nobs = 0
 
             for row in range(n_rows):
@@ -283,14 +292,17 @@ def _ewm_mean_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: 
 
                 if np.isnan(val):
                     if not ignore_na:
-                        weighted_sum = 0.0
-                        weight_sum = 0.0
-                        weight = 1.0
-                        nobs = 0
+                        # Decay weights even for NaN, but don't add to sum
+                        weighted_sum *= (1.0 - alpha)
+                        weight_sum *= (1.0 - alpha)
+                    # When ignore_na=True, don't decay weights
+                    # Output current EWM if we have enough observations
+                    if nobs >= min_periods and weight_sum > 0:
+                        result[row, col] = weighted_sum / weight_sum
                 else:
-                    weighted_sum += weight * val
-                    weight_sum += weight
-                    weight *= (1.0 - alpha)
+                    # Decay existing sums first, then add new observation with weight 1.0
+                    weighted_sum = (1.0 - alpha) * weighted_sum + val
+                    weight_sum = (1.0 - alpha) * weight_sum + 1.0
                     nobs += 1
 
                     if nobs >= min_periods:
@@ -307,6 +319,9 @@ def _ewm_mean_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: 
                     if not ignore_na:
                         is_first = True
                         nobs = 0
+                    # Output current EWM for NaN if we have enough observations
+                    elif nobs >= min_periods and not is_first:
+                        result[row, col] = ewm
                 else:
                     if is_first:
                         ewm = val
@@ -330,10 +345,10 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
 
     for col in range(n_cols):
         if adjust:
+            # New observations get weight 1.0, older observations decay by (1-alpha)
             weighted_sum = 0.0
             weighted_sum_sq = 0.0
             weight_sum = 0.0
-            weight = 1.0
             nobs = 0
 
             for row in range(n_rows):
@@ -341,16 +356,24 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
 
                 if np.isnan(val):
                     if not ignore_na:
-                        weighted_sum = 0.0
-                        weighted_sum_sq = 0.0
-                        weight_sum = 0.0
-                        weight = 1.0
-                        nobs = 0
+                        # Decay weights even for NaN, but don't add to sum
+                        weighted_sum *= (1.0 - alpha)
+                        weighted_sum_sq *= (1.0 - alpha)
+                        weight_sum *= (1.0 - alpha)
+                    # When ignore_na=True, don't decay weights
+                    # Output current variance if we have enough observations
+                    if nobs >= min_periods and nobs > 1 and weight_sum > 0:  # Variance requires at least 2 observations
+                        mean = weighted_sum / weight_sum
+                        mean_sq = weighted_sum_sq / weight_sum
+                        var = mean_sq - mean * mean
+                        if not bias:
+                            var *= weight_sum / (weight_sum - 1.0 + alpha)
+                        result[row, col] = max(0.0, var)
                 else:
-                    weighted_sum += weight * val
-                    weighted_sum_sq += weight * val * val
-                    weight_sum += weight
-                    weight *= (1.0 - alpha)
+                    # Decay existing sums first, then add new observation with weight 1.0
+                    weighted_sum = (1.0 - alpha) * weighted_sum + val
+                    weighted_sum_sq = (1.0 - alpha) * weighted_sum_sq + val * val
+                    weight_sum = (1.0 - alpha) * weight_sum + 1.0
                     nobs += 1
 
                     if nobs >= min_periods:
@@ -375,6 +398,12 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
                     if not ignore_na:
                         is_first = True
                         nobs = 0
+                    # Output current variance for NaN if we have enough observations
+                    elif nobs >= min_periods and not is_first:
+                        var = ewm_sq - ewm * ewm
+                        if not bias and nobs > 1:
+                            var *= nobs / (nobs - 1.0)
+                        result[row, col] = max(0.0, var)
                 else:
                     if is_first:
                         ewm = val
@@ -413,23 +442,26 @@ def _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
         if adjust:
+            # New observations get weight 1.0, older observations decay by (1-alpha)
             weighted_sum = 0.0
             weight_sum = 0.0
-            weight = 1.0
             nobs = 0
             for row in range(n_rows):
                 val = arr[row, c]
                 if np.isnan(val):
                     if not ignore_na:
-                        weighted_sum = 0.0
-                        weight_sum = 0.0
-                        weight = 1.0
-                        nobs = 0
-                    result[row, c] = np.nan
+                        # Decay weights even for NaN, but don't add to sum
+                        weighted_sum *= (1.0 - alpha)
+                        weight_sum *= (1.0 - alpha)
+                    # Output current EWM if we have enough observations
+                    if nobs >= min_periods and weight_sum > 0:
+                        result[row, c] = weighted_sum / weight_sum
+                    else:
+                        result[row, c] = np.nan
                 else:
-                    weighted_sum += weight * val
-                    weight_sum += weight
-                    weight *= (1.0 - alpha)
+                    # Decay existing sums first, then add new observation with weight 1.0
+                    weighted_sum = (1.0 - alpha) * weighted_sum + val
+                    weight_sum = (1.0 - alpha) * weight_sum + 1.0
                     nobs += 1
                     if nobs >= min_periods:
                         result[row, c] = weighted_sum / weight_sum
@@ -445,7 +477,11 @@ def _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore
                     if not ignore_na:
                         is_first = True
                         nobs = 0
-                    result[row, c] = np.nan
+                        result[row, c] = np.nan
+                    elif nobs >= min_periods and not is_first:
+                        result[row, c] = ewm
+                    else:
+                        result[row, c] = np.nan
                 else:
                     if is_first:
                         ewm = val
@@ -465,26 +501,34 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
         if adjust:
+            # New observations get weight 1.0, older observations decay by (1-alpha)
             weighted_sum = 0.0
             weighted_sum_sq = 0.0
             weight_sum = 0.0
-            weight = 1.0
             nobs = 0
             for row in range(n_rows):
                 val = arr[row, c]
                 if np.isnan(val):
                     if not ignore_na:
-                        weighted_sum = 0.0
-                        weighted_sum_sq = 0.0
-                        weight_sum = 0.0
-                        weight = 1.0
-                        nobs = 0
-                    result[row, c] = np.nan
+                        # Decay weights even for NaN, but don't add to sum
+                        weighted_sum *= (1.0 - alpha)
+                        weighted_sum_sq *= (1.0 - alpha)
+                        weight_sum *= (1.0 - alpha)
+                    # Output current variance if we have enough observations
+                    if nobs >= min_periods and weight_sum > 0:
+                        mean = weighted_sum / weight_sum
+                        mean_sq = weighted_sum_sq / weight_sum
+                        var = mean_sq - mean * mean
+                        if not bias and nobs > 1:
+                            var *= weight_sum / (weight_sum - 1.0 + alpha)
+                        result[row, c] = max(0.0, var)
+                    else:
+                        result[row, c] = np.nan
                 else:
-                    weighted_sum += weight * val
-                    weighted_sum_sq += weight * val * val
-                    weight_sum += weight
-                    weight *= (1.0 - alpha)
+                    # Decay existing sums first, then add new observation with weight 1.0
+                    weighted_sum = (1.0 - alpha) * weighted_sum + val
+                    weighted_sum_sq = (1.0 - alpha) * weighted_sum_sq + val * val
+                    weight_sum = (1.0 - alpha) * weight_sum + 1.0
                     nobs += 1
                     if nobs >= min_periods:
                         mean = weighted_sum / weight_sum
@@ -506,7 +550,14 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                     if not ignore_na:
                         is_first = True
                         nobs = 0
-                    result[row, c] = np.nan
+                        result[row, c] = np.nan
+                    elif nobs >= min_periods and not is_first:
+                        var = ewm_sq - ewm * ewm
+                        if not bias and nobs > 1:
+                            var *= nobs / (nobs - 1.0)
+                        result[row, c] = max(0.0, var)
+                    else:
+                        result[row, c] = np.nan
                 else:
                     if is_first:
                         ewm = val
