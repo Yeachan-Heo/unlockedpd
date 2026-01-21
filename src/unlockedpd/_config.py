@@ -16,6 +16,10 @@ from typing import Optional
 
 import numba
 
+# Dispatch thresholds - used by all ops modules
+PARALLEL_THRESHOLD = 500_000  # Elements threshold for parallel prange dispatch
+THREADPOOL_THRESHOLD = 10_000_000  # Elements threshold for ThreadPool+nogil dispatch
+
 
 @dataclass
 class UnlockedConfig:
@@ -111,6 +115,11 @@ class UnlockedConfig:
         with self._lock:
             self._parallel_threshold = int(value)
 
+    @property
+    def threadpool_workers(self) -> int:
+        """Number of workers for ThreadPoolExecutor."""
+        return min(os.cpu_count() or 4, 32)
+
     def apply_thread_config(self) -> None:
         """Apply the current thread configuration to Numba."""
         with self._lock:
@@ -130,3 +139,10 @@ class UnlockedConfig:
 
 # Global configuration instance
 config = UnlockedConfig()
+
+__all__ = [
+    'UnlockedConfig',
+    'config',
+    'PARALLEL_THRESHOLD',
+    'THREADPOOL_THRESHOLD',
+]

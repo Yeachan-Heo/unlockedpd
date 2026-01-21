@@ -320,6 +320,137 @@ def warmup_transform():
         pass
 
 
+def warmup_aggregations():
+    """Pre-compile aggregation operation functions."""
+    try:
+        from .ops.aggregations import (
+            _sum_serial, _sum_parallel,
+            _mean_serial, _mean_parallel,
+            _std_serial, _std_parallel,
+            _var_serial, _var_parallel,
+            _min_serial, _min_parallel,
+            _max_serial, _max_parallel,
+            _median_serial, _median_parallel,
+            _prod_serial, _prod_parallel,
+        )
+
+        dummy = np.zeros((10, 4), dtype=np.float64)
+
+        _sum_serial(dummy, True)
+        _sum_parallel(dummy, True)
+        _mean_serial(dummy, True)
+        _mean_parallel(dummy, True)
+        _std_serial(dummy, True, 1)
+        _std_parallel(dummy, True, 1)
+        _var_serial(dummy, True, 1)
+        _var_parallel(dummy, True, 1)
+        _min_serial(dummy, True)
+        _min_parallel(dummy, True)
+        _max_serial(dummy, True)
+        _max_parallel(dummy, True)
+        _median_serial(dummy, True)
+        _median_parallel(dummy, True)
+        _prod_serial(dummy, True)
+        _prod_parallel(dummy, True)
+    except Exception:
+        pass
+
+
+def warmup_fillna():
+    """Pre-compile fill operation functions."""
+    try:
+        from .ops.fillna import (
+            _ffill_serial, _ffill_parallel,
+            _bfill_serial, _bfill_parallel,
+            _fillna_scalar_serial, _fillna_scalar_parallel,
+        )
+
+        dummy = np.zeros((10, 4), dtype=np.float64)
+        dummy[2, 1] = np.nan  # Add some NaN
+
+        _ffill_serial(dummy)
+        _ffill_parallel(dummy)
+        _bfill_serial(dummy)
+        _bfill_parallel(dummy)
+        _fillna_scalar_serial(dummy, 0.0)
+        _fillna_scalar_parallel(dummy, 0.0)
+    except Exception:
+        pass
+
+
+def warmup_element_wise():
+    """Pre-compile element-wise operation functions."""
+    try:
+        from .ops.element_wise import (
+            _clip_serial, _clip_parallel,
+            _abs_serial, _abs_parallel,
+            _round_serial, _round_parallel,
+        )
+
+        dummy = np.zeros((10, 4), dtype=np.float64)
+
+        _clip_serial(dummy, -1.0, 1.0)
+        _clip_parallel(dummy, -1.0, 1.0)
+        _abs_serial(dummy)
+        _abs_parallel(dummy)
+        _round_serial(dummy, 2)
+        _round_parallel(dummy, 2)
+    except Exception:
+        pass
+
+
+def warmup_correlation():
+    """Pre-compile correlation operation functions."""
+    try:
+        from .ops.correlation import (
+            _corr_matrix_serial, _corr_matrix_parallel,
+            _cov_matrix_serial, _cov_matrix_parallel,
+        )
+
+        dummy = np.random.randn(10, 4).astype(np.float64)
+
+        _corr_matrix_serial(dummy, 1)
+        _corr_matrix_parallel(dummy, 1)
+        _cov_matrix_serial(dummy, 1, 1)
+        _cov_matrix_parallel(dummy, 1, 1)
+    except Exception:
+        pass
+
+
+def warmup_quantile():
+    """Pre-compile quantile operation functions."""
+    try:
+        from .ops.quantile import (
+            _quantile_serial, _quantile_parallel,
+        )
+
+        dummy = np.zeros((10, 4), dtype=np.float64)
+        q = np.array([0.25, 0.5, 0.75])
+
+        _quantile_serial(dummy, q, 0)
+        _quantile_parallel(dummy, q, 0)
+    except Exception:
+        pass
+
+
+def warmup_dataframe_transform():
+    """Pre-compile transform operation functions."""
+    try:
+        from .ops.dataframe_transform import (
+            _apply_abs_serial, _apply_abs_parallel,
+            _apply_sqrt_serial, _apply_sqrt_parallel,
+        )
+
+        dummy = np.abs(np.random.randn(10, 4).astype(np.float64))
+
+        _apply_abs_serial(dummy)
+        _apply_abs_parallel(dummy)
+        _apply_sqrt_serial(dummy)
+        _apply_sqrt_parallel(dummy)
+    except Exception:
+        pass
+
+
 def warmup_all():
     """Pre-compile all Numba functions.
 
@@ -335,3 +466,10 @@ def warmup_all():
     warmup_stats()
     warmup_pairwise()
     warmup_transform()
+    # NEW
+    warmup_aggregations()
+    warmup_fillna()
+    warmup_element_wise()
+    warmup_correlation()
+    warmup_quantile()
+    warmup_dataframe_transform()

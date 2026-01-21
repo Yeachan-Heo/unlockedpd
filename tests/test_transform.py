@@ -173,7 +173,6 @@ class TestPipe:
 class TestAgg:
     """Tests for agg/aggregate() operation"""
 
-    @pytest.mark.skip(reason="Agg operations not yet implemented")
     def test_basic_agg(self):
         """Test basic agg matches pandas."""
         import unlockedpd
@@ -188,7 +187,6 @@ class TestAgg:
 
         pd.testing.assert_series_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="Agg operations not yet implemented")
     def test_agg_multiple_functions(self):
         """Test agg with multiple functions."""
         import unlockedpd
@@ -203,7 +201,6 @@ class TestAgg:
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="Agg operations not yet implemented")
     def test_agg_dict(self):
         """Test agg with dict of functions per column."""
         import unlockedpd

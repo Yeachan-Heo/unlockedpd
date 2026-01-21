@@ -235,7 +235,6 @@ class TestRank:
 class TestCorr:
     """Tests for corr() operation"""
 
-    @pytest.mark.skip(reason="Correlation operations not yet implemented")
     def test_basic_corr(self):
         """Test basic correlation matches pandas."""
         import unlockedpd
@@ -254,7 +253,6 @@ class TestCorr:
 class TestCov:
     """Tests for cov() operation"""
 
-    @pytest.mark.skip(reason="Covariance operations not yet implemented")
     def test_basic_cov(self):
         """Test basic covariance matches pandas."""
         import unlockedpd
@@ -273,7 +271,6 @@ class TestCov:
 class TestQuantile:
     """Tests for quantile() operation"""
 
-    @pytest.mark.skip(reason="Quantile operations not yet implemented")
     def test_basic_quantile(self):
         """Test basic quantile matches pandas."""
         import unlockedpd
@@ -288,7 +285,6 @@ class TestQuantile:
 
         pd.testing.assert_series_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="Quantile operations not yet implemented")
     def test_quantile_multiple(self):
         """Test quantile with multiple quantiles."""
         import unlockedpd

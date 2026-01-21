@@ -704,6 +704,8 @@ def _make_ewm_mean_wrapper():
         if len(numeric_cols) == 0:
             raise TypeError("No numeric columns to process")
 
+        # Optimize memory layout for column-parallel operations (better cache performance)
+        numeric_df = ensure_optimal_layout(numeric_df)
         arr = ensure_float64(numeric_df.values)  # Keep C-contiguous (pandas default)
         result = _ewm_mean_dispatch(arr, alpha, adjust, ignore_na, min_periods)
 
@@ -742,6 +744,8 @@ def _make_ewm_var_wrapper():
         if len(numeric_cols) == 0:
             raise TypeError("No numeric columns to process")
 
+        # Optimize memory layout for column-parallel operations (better cache performance)
+        numeric_df = ensure_optimal_layout(numeric_df)
         arr = ensure_float64(numeric_df.values)  # Keep C-contiguous (pandas default)
         result = _ewm_var_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias)
 
@@ -780,6 +784,8 @@ def _make_ewm_std_wrapper():
         if len(numeric_cols) == 0:
             raise TypeError("No numeric columns to process")
 
+        # Optimize memory layout for column-parallel operations (better cache performance)
+        numeric_df = ensure_optimal_layout(numeric_df)
         arr = ensure_float64(numeric_df.values)  # Keep C-contiguous (pandas default)
         result = _ewm_std_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias)
 
