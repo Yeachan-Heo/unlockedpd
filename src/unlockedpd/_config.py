@@ -8,6 +8,11 @@ Environment Variables:
     UNLOCKEDPD_NUM_THREADS: Number of threads for Numba parallel operations (default: 0 = auto)
     UNLOCKEDPD_WARN_ON_FALLBACK: Set to 'true' to warn when falling back to pandas (default: 'false')
     UNLOCKEDPD_PARALLEL_THRESHOLD: Minimum array size for parallel execution (default: 10000)
+    UNLOCKEDPD_IO_ENABLED: Set to 'false' to disable IO optimizations (default: 'true')
+    UNLOCKEDPD_IO_WORKERS: Number of workers for parallel IO (default: 0 = auto)
+    UNLOCKEDPD_CSV_THRESHOLD_MB: Minimum CSV file size in MB for parallel reading (default: 50)
+    UNLOCKEDPD_PARQUET_THRESHOLD_MB: Minimum Parquet file size in MB for parallel reading (default: 20)
+    UNLOCKEDPD_EXCEL_THRESHOLD_MB: Minimum Excel file size in MB for parallel reading (default: 10)
 """
 import os
 import threading
@@ -36,6 +41,11 @@ class UnlockedConfig:
     _warn_on_fallback: bool = field(default=False, repr=False)
     _cache_compiled: bool = field(default=True, repr=False)
     _parallel_threshold: int = field(default=10_000, repr=False)
+    _io_enabled: bool = field(default=True, repr=False)
+    _io_workers: int = field(default=0, repr=False)  # 0 = auto
+    _csv_threshold_mb: int = field(default=50, repr=False)
+    _parquet_threshold_mb: int = field(default=20, repr=False)
+    _excel_threshold_mb: int = field(default=10, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self):
@@ -49,6 +59,21 @@ class UnlockedConfig:
 
         threshold_str = os.environ.get('UNLOCKEDPD_PARALLEL_THRESHOLD', '10000')
         self._parallel_threshold = int(threshold_str) if threshold_str.isdigit() else 10_000
+
+        # IO configuration
+        self._io_enabled = os.environ.get('UNLOCKEDPD_IO_ENABLED', 'true').lower() == 'true'
+
+        io_workers_str = os.environ.get('UNLOCKEDPD_IO_WORKERS', '0')
+        self._io_workers = int(io_workers_str) if io_workers_str.isdigit() else 0
+
+        csv_thresh = os.environ.get('UNLOCKEDPD_CSV_THRESHOLD_MB', '50')
+        self._csv_threshold_mb = int(csv_thresh) if csv_thresh.isdigit() else 50
+
+        parquet_thresh = os.environ.get('UNLOCKEDPD_PARQUET_THRESHOLD_MB', '20')
+        self._parquet_threshold_mb = int(parquet_thresh) if parquet_thresh.isdigit() else 20
+
+        excel_thresh = os.environ.get('UNLOCKEDPD_EXCEL_THRESHOLD_MB', '10')
+        self._excel_threshold_mb = int(excel_thresh) if excel_thresh.isdigit() else 10
 
         # Apply thread config on initialization
         if self._num_threads > 0:
@@ -111,6 +136,63 @@ class UnlockedConfig:
         with self._lock:
             self._parallel_threshold = int(value)
 
+    @property
+    def io_enabled(self) -> bool:
+        """Whether IO optimizations are enabled."""
+        with self._lock:
+            return self._io_enabled and self._enabled
+
+    @io_enabled.setter
+    def io_enabled(self, value: bool) -> None:
+        with self._lock:
+            self._io_enabled = bool(value)
+
+    @property
+    def io_workers(self) -> int:
+        """Number of workers for parallel IO (0 = auto)."""
+        with self._lock:
+            if self._io_workers > 0:
+                return self._io_workers
+            return min(os.cpu_count() or 4, 16)
+
+    @io_workers.setter
+    def io_workers(self, value: int) -> None:
+        with self._lock:
+            self._io_workers = max(0, int(value))
+
+    @property
+    def csv_threshold_mb(self) -> int:
+        """Minimum CSV file size in MB for parallel reading."""
+        with self._lock:
+            return self._csv_threshold_mb
+
+    @csv_threshold_mb.setter
+    def csv_threshold_mb(self, value: int) -> None:
+        with self._lock:
+            self._csv_threshold_mb = max(1, int(value))
+
+    @property
+    def parquet_threshold_mb(self) -> int:
+        """Minimum Parquet file size in MB for parallel reading."""
+        with self._lock:
+            return self._parquet_threshold_mb
+
+    @parquet_threshold_mb.setter
+    def parquet_threshold_mb(self, value: int) -> None:
+        with self._lock:
+            self._parquet_threshold_mb = max(1, int(value))
+
+    @property
+    def excel_threshold_mb(self) -> int:
+        """Minimum Excel file size in MB for parallel reading."""
+        with self._lock:
+            return self._excel_threshold_mb
+
+    @excel_threshold_mb.setter
+    def excel_threshold_mb(self, value: int) -> None:
+        with self._lock:
+            self._excel_threshold_mb = max(1, int(value))
+
     def apply_thread_config(self) -> None:
         """Apply the current thread configuration to Numba."""
         with self._lock:
@@ -124,7 +206,9 @@ class UnlockedConfig:
                 f"num_threads={self._num_threads}, "
                 f"warn_on_fallback={self._warn_on_fallback}, "
                 f"cache_compiled={self._cache_compiled}, "
-                f"parallel_threshold={self._parallel_threshold})"
+                f"parallel_threshold={self._parallel_threshold}, "
+                f"io_enabled={self._io_enabled}, "
+                f"io_workers={self._io_workers})"
             )
 
 

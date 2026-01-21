@@ -23,6 +23,19 @@ Configuration:
     # UNLOCKEDPD_NUM_THREADS=4
     # UNLOCKEDPD_WARN_ON_FALLBACK=true
     # UNLOCKEDPD_PARALLEL_THRESHOLD=10000
+
+IO Operations:
+    # Read multiple files in parallel
+    dfs = unlockedpd.read_files_parallel(file_paths, reader_func=pd.read_csv)
+    df = unlockedpd.read_csv_folder("data/csv_folder/")
+    df = unlockedpd.read_parquet_folder("data/parquet_folder/")
+
+    # Configuration for IO operations:
+    unlockedpd.config.csv_threshold_mb = 50  # Min file size for parallel CSV reading
+    # Or via environment variables:
+    # UNLOCKEDPD_IO_ENABLED=true
+    # UNLOCKEDPD_IO_WORKERS=8
+    # UNLOCKEDPD_CSV_THRESHOLD_MB=50
 """
 
 __version__ = "0.2.1"
@@ -41,6 +54,14 @@ from ._patch import (
 
 # Import the jit decorator for user functions
 from .ops.apply import jit
+
+# Import IO utilities for convenience
+from .io import (
+    read_files_parallel,
+    read_csv_folder,
+    read_parquet_folder,
+    read_excel_folder,
+)
 
 
 def _apply_all_patches():
@@ -89,6 +110,10 @@ def _apply_all_patches():
     from .ops.ewm import apply_ewm_patches
     apply_ewm_patches()
 
+    # IO patches for parallel file reading
+    from .io import apply_io_patches
+    apply_io_patches()
+
 
 def _warmup_all():
     """Pre-compile all Numba functions to avoid first-call overhead."""
@@ -120,6 +145,11 @@ __all__ = [
     "_PatchRegistry",
     # User utilities
     "jit",
+    # IO utilities
+    "read_files_parallel",
+    "read_csv_folder",
+    "read_parquet_folder",
+    "read_excel_folder",
     # Internal
     "_apply_all_patches",
     "_warmup_all",
