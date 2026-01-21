@@ -213,7 +213,8 @@ def _expanding_skew_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
     """Compute expanding skewness using online algorithm for moments.
 
     Uses online algorithm to maintain M1 (mean), M2, M3, M4 moments.
-    Skewness = M3 / (M2^(3/2))
+    Skewness with bias correction: (sqrt(n*(n-1)) / (n-2)) * m3 / (m2^1.5)
+    where m2 = M2/n and m3 = M3/n
 
     Reference: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
     """
@@ -245,9 +246,15 @@ def _expanding_skew_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
             # Need at least 3 values for skewness
             if count >= max(min_periods, 3):
-                variance = M2 / count
-                if variance > 0:
-                    result[row, col] = (np.sqrt(count) * M3) / (M2 ** 1.5)
+                m2 = M2 / count
+                m3 = M3 / count
+                if m2 > 0:
+                    # Pandas bias correction formula
+                    adj = np.sqrt(count * (count - 1)) / (count - 2)
+                    result[row, col] = adj * m3 / (m2 ** 1.5)
+                else:
+                    # Zero variance -> return 0.0 (not NaN)
+                    result[row, col] = 0.0
 
     return result
 
@@ -257,7 +264,9 @@ def _expanding_kurt_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
     """Compute expanding kurtosis using online algorithm for moments.
 
     Uses online algorithm to maintain M1 (mean), M2, M3, M4 moments.
-    Kurtosis = M4 / (M2^2) - 3 (excess kurtosis)
+    Fisher (1936) correction for sample kurtosis:
+    g_2 = ((n+1)*n / ((n-1)*(n-2)*(n-3))) * (M4 / var_sample^2) - 3*(n-1)^2 / ((n-2)*(n-3))
+    where var_sample = M2 / (n-1)
 
     Reference: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
     """
@@ -268,9 +277,9 @@ def _expanding_kurt_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
     for col in prange(n_cols):
         count = 0
         M1 = 0.0  # Mean
-        M2 = 0.0  # Second moment
-        M3 = 0.0  # Third moment
-        M4 = 0.0  # Fourth moment
+        M2 = 0.0  # Sum of squared deviations
+        M3 = 0.0  # Sum of cubed deviations (scaled)
+        M4 = 0.0  # Sum of fourth power deviations (scaled)
 
         for row in range(n_rows):
             val = arr[row, col]
@@ -292,10 +301,18 @@ def _expanding_kurt_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
             # Need at least 4 values for kurtosis
             if count >= max(min_periods, 4):
-                variance = M2 / count
-                if variance > 0:
-                    # Excess kurtosis (subtract 3 for normal distribution baseline)
-                    result[row, col] = (count * M4) / (M2 * M2) - 3.0
+                if M2 > 0:
+                    # Fisher (1936) correction for sample kurtosis
+                    n = count
+                    var_sample = M2 / (n - 1)
+                    s4 = var_sample * var_sample
+                    term1 = ((n + 1) * n) / ((n - 1) * (n - 2) * (n - 3))
+                    term2 = M4 / s4
+                    term3 = 3 * ((n - 1) ** 2) / ((n - 2) * (n - 3))
+                    result[row, col] = term1 * term2 - term3
+                else:
+                    # Zero variance -> return -3.0 (not NaN)
+                    result[row, col] = -3.0
 
     return result
 
@@ -503,9 +520,15 @@ def _expanding_skew_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 count = n
 
             if count >= max(min_periods, 3):
-                variance = M2 / count
-                if variance > 0:
-                    result[row, col] = (np.sqrt(count) * M3) / (M2 ** 1.5)
+                m2 = M2 / count
+                m3 = M3 / count
+                if m2 > 0:
+                    # Pandas bias correction formula
+                    adj = np.sqrt(count * (count - 1)) / (count - 2)
+                    result[row, col] = adj * m3 / (m2 ** 1.5)
+                else:
+                    # Zero variance -> return 0.0 (not NaN)
+                    result[row, col] = 0.0
 
     return result
 
@@ -543,9 +566,18 @@ def _expanding_kurt_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 count = n
 
             if count >= max(min_periods, 4):
-                variance = M2 / count
-                if variance > 0:
-                    result[row, col] = (count * M4) / (M2 * M2) - 3.0
+                if M2 > 0:
+                    # Fisher (1936) correction for sample kurtosis
+                    n = count
+                    var_sample = M2 / (n - 1)
+                    s4 = var_sample * var_sample
+                    term1 = ((n + 1) * n) / ((n - 1) * (n - 2) * (n - 3))
+                    term2 = M4 / s4
+                    term3 = 3 * ((n - 1) ** 2) / ((n - 2) * (n - 3))
+                    result[row, col] = term1 * term2 - term3
+                else:
+                    # Zero variance -> return -3.0 (not NaN)
+                    result[row, col] = -3.0
 
     return result
 

@@ -71,10 +71,15 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row - periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     else:
         abs_periods = -periods
         for row in prange(n_rows - abs_periods, n_rows):
@@ -84,10 +89,15 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row + abs_periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     return result
 
 
@@ -158,10 +168,15 @@ def _pct_change_col_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for row in range(periods, n_rows):
                 old_val = arr[row - periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
         else:
             abs_periods = -periods
             for row in range(n_rows - abs_periods, n_rows):
@@ -169,10 +184,15 @@ def _pct_change_col_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for row in range(n_rows - abs_periods):
                 old_val = arr[row + abs_periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     return result
 
 
@@ -242,10 +262,15 @@ def _pct_change_serial(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row - periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     else:
         abs_periods = -periods
         for row in range(n_rows - abs_periods, n_rows):
@@ -255,10 +280,15 @@ def _pct_change_serial(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row + abs_periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     return result
 
 

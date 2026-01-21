@@ -247,6 +247,23 @@ Contributions are welcome! Areas of interest:
 
 ## Changelog
 
+### v0.2.2 (2026-01-21)
+
+**100% Pandas Compatibility Fixes:**
+
+- **Fixed `pct_change()` division by zero** - Now correctly returns `inf`/`-inf` when dividing by zero (previously returned `NaN`)
+- **Fixed rolling `skew()` and `kurt()`** - Corrected bias correction formulas to match pandas exactly
+- **Fixed expanding `skew()` and `kurt()`** - Corrected bias correction formulas to match pandas exactly
+- **Fixed zero variance handling** - Rolling/expanding skew returns `0.0`, kurt returns `-3.0` for constant data (matching pandas)
+- **Fixed EWM `mean()` formula** - Corrected weight decay calculation to match pandas exactly
+- **Fixed EWM `std()` and `var()`** - Corrected bias correction formula and first value handling (returns NaN for first observation)
+
+All operations now pass strict pandas compatibility tests (`rtol=1e-10`) for edge cases including:
+- All-NaN columns
+- Zero variance (constant data)
+- Near-zero variance (numerical precision edge cases)
+- Division by zero in pct_change
+
 ### v0.2.1 (2026-01-20)
 
 **Critical Bug Fix:**
