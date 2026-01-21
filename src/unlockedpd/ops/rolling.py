@@ -776,14 +776,18 @@ def _rolling_skew_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarr
                 m3 /= count
 
                 # Compute skewness
-                if m2 > 1e-14:
+                # Exact zero variance: well-defined skew = 0
+                # Near-zero variance (numerical noise): NaN
+                # Normal variance: compute skew with bias correction
+                if m2 == 0.0:
+                    result[row, col] = 0.0
+                elif m2 > 1e-14:
                     skew = m3 / (m2 ** 1.5)
                     # Apply bias correction
                     if count > 2:
                         adjust = np.sqrt(count * (count - 1)) / (count - 2)
                         result[row, col] = adjust * skew
-                else:
-                    result[row, col] = 0.0
+                # else: result stays NaN (near-zero variance, numerically unstable)
 
     return result
 
@@ -830,14 +834,18 @@ def _rolling_skew_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> n
                 m3 /= count
 
                 # Compute skewness
-                if m2 > 1e-14:
+                # Exact zero variance: well-defined skew = 0
+                # Near-zero variance (numerical noise): NaN
+                # Normal variance: compute skew with bias correction
+                if m2 == 0.0:
+                    result[row, col] = 0.0
+                elif m2 > 1e-14:
                     skew = m3 / (m2 ** 1.5)
                     # Apply bias correction
                     if count > 2:
                         adjust = np.sqrt(count * (count - 1)) / (count - 2)
                         result[row, col] = adjust * skew
-                else:
-                    result[row, col] = 0.0
+                # else: result stays NaN (near-zero variance, numerically unstable)
 
     return result
 
@@ -872,29 +880,30 @@ def _rolling_kurt_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarr
                     mean += values[i]
                 mean /= count
 
-                # Compute moments
-                m2 = 0.0
-                m4 = 0.0
+                # Compute sum of squared and 4th power deviations
+                sum_sq = 0.0
+                sum_dev4 = 0.0
                 for i in range(count):
                     delta = values[i] - mean
                     delta2 = delta * delta
-                    m2 += delta2
-                    m4 += delta2 * delta2
+                    sum_sq += delta2
+                    sum_dev4 += delta2 * delta2
 
-                m2 /= count
-                m4 /= count
+                # Sample variance
+                s2 = sum_sq / (count - 1)
 
                 # Compute kurtosis (excess kurtosis)
-                if m2 > 1e-14:
-                    kurt = m4 / (m2 * m2) - 3.0
-                    # Apply bias correction
-                    if count > 3:
-                        adjust = (count - 1) / ((count - 2) * (count - 3))
-                        term1 = (count + 1) * kurt
-                        term2 = 3.0 * (count - 1)
-                        result[row, col] = adjust * (term1 + term2)
+                if s2 > 1e-14:
+                    # Pandas uses scipy.stats.kurtosis with fisher=True, bias=False
+                    # Formula: n*(n+1)/((n-1)*(n-2)*(n-3)) * sum((x-mean)^4)/s^4 - 3*(n-1)^2/((n-2)*(n-3))
+                    n = float(count)
+                    s4 = s2 * s2
+                    term1 = n * (n + 1) / ((n - 1) * (n - 2) * (n - 3))
+                    term2 = 3.0 * (n - 1) * (n - 1) / ((n - 2) * (n - 3))
+                    result[row, col] = term1 * sum_dev4 / s4 - term2
                 else:
-                    result[row, col] = 0.0
+                    # Pandas returns -3.0 for zero variance (constant values)
+                    result[row, col] = -3.0
 
     return result
 
@@ -929,29 +938,30 @@ def _rolling_kurt_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> n
                     mean += values[i]
                 mean /= count
 
-                # Compute moments
-                m2 = 0.0
-                m4 = 0.0
+                # Compute sum of squared and 4th power deviations
+                sum_sq = 0.0
+                sum_dev4 = 0.0
                 for i in range(count):
                     delta = values[i] - mean
                     delta2 = delta * delta
-                    m2 += delta2
-                    m4 += delta2 * delta2
+                    sum_sq += delta2
+                    sum_dev4 += delta2 * delta2
 
-                m2 /= count
-                m4 /= count
+                # Sample variance
+                s2 = sum_sq / (count - 1)
 
                 # Compute kurtosis (excess kurtosis)
-                if m2 > 1e-14:
-                    kurt = m4 / (m2 * m2) - 3.0
-                    # Apply bias correction
-                    if count > 3:
-                        adjust = (count - 1) / ((count - 2) * (count - 3))
-                        term1 = (count + 1) * kurt
-                        term2 = 3.0 * (count - 1)
-                        result[row, col] = adjust * (term1 + term2)
+                if s2 > 1e-14:
+                    # Pandas uses scipy.stats.kurtosis with fisher=True, bias=False
+                    # Formula: n*(n+1)/((n-1)*(n-2)*(n-3)) * sum((x-mean)^4)/s^4 - 3*(n-1)^2/((n-2)*(n-3))
+                    n = float(count)
+                    s4 = s2 * s2
+                    term1 = n * (n + 1) / ((n - 1) * (n - 2) * (n - 3))
+                    term2 = 3.0 * (n - 1) * (n - 1) / ((n - 2) * (n - 3))
+                    result[row, col] = term1 * sum_dev4 / s4 - term2
                 else:
-                    result[row, col] = 0.0
+                    # Pandas returns -3.0 for zero variance (constant values)
+                    result[row, col] = -3.0
 
     return result
 

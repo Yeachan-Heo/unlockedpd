@@ -71,10 +71,15 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row - periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     else:
         abs_periods = -periods
         for row in prange(n_rows - abs_periods, n_rows):
@@ -84,10 +89,15 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row + abs_periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     return result
 
 
@@ -158,10 +168,15 @@ def _pct_change_col_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for row in range(periods, n_rows):
                 old_val = arr[row - periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
         else:
             abs_periods = -periods
             for row in range(n_rows - abs_periods, n_rows):
@@ -169,10 +184,15 @@ def _pct_change_col_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for row in range(n_rows - abs_periods):
                 old_val = arr[row + abs_periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     return result
 
 
@@ -242,10 +262,15 @@ def _pct_change_serial(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row - periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     else:
         abs_periods = -periods
         for row in range(n_rows - abs_periods, n_rows):
@@ -255,10 +280,15 @@ def _pct_change_serial(arr: np.ndarray, periods: int = 1) -> np.ndarray:
             for col in range(n_cols):
                 old_val = arr[row + abs_periods, col]
                 new_val = arr[row, col]
-                if old_val != 0.0 and not np.isnan(old_val) and not np.isnan(new_val):
-                    result[row, col] = (new_val - old_val) / old_val
-                else:
+                if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        result[row, col] = np.nan  # 0/0 undefined
+                    else:
+                        result[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    result[row, col] = (new_val - old_val) / old_val
     return result
 
 
@@ -385,13 +415,28 @@ def optimized_diff(df, periods=1, axis=0):
     )
 
 
-def optimized_pct_change(df, periods=1, fill_method=None, limit=None, freq=None, **kwargs):
+def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None, **kwargs):
     """Optimized pct_change implementation for DataFrames.
 
     Uses shape-adaptive parallelization for maximum CPU utilization.
+
+    Args:
+        df: Input DataFrame
+        periods: Periods to shift for forming percent change (default 1)
+        fill_method: How to handle NAs before computing percent changes.
+            - 'pad'/'ffill': Forward fill NaN values (pandas default, matches pandas behavior)
+            - 'bfill'/'backfill': Backward fill NaN values
+            - None: Don't fill NaN values (NaN in input = NaN in output)
+        limit: Not supported (raises ValueError)
+        freq: Not supported (raises ValueError)
+
+    Returns:
+        DataFrame with percentage changes
+
+    Note:
+        pandas is deprecating fill_method='pad' as default in future versions.
+        We maintain 'pad' as default to match current pandas behavior.
     """
-    if fill_method is not None:
-        raise ValueError("fill_method is not supported in optimized pct_change")
     if limit is not None:
         raise ValueError("limit is not supported in optimized pct_change")
     if freq is not None:
@@ -399,6 +444,16 @@ def optimized_pct_change(df, periods=1, fill_method=None, limit=None, freq=None,
 
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
+
+    # Handle fill_method - match pandas behavior
+    # pandas default is 'pad' (forward fill) before computing pct_change
+    if fill_method in ('pad', 'ffill'):
+        df = df.ffill()
+    elif fill_method in ('bfill', 'backfill'):
+        df = df.bfill()
+    elif fill_method is not None:
+        raise ValueError(f"fill_method must be 'pad', 'ffill', 'bfill', 'backfill', or None, got {fill_method!r}")
+    # fill_method=None: don't fill, compute pct_change with NaNs as-is
 
     # Fast path: all-numeric DataFrame (common case)
     if is_all_numeric(df):
