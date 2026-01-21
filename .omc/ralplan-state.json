@@ -1,0 +1,12 @@
+{
+  "active": false,
+  "mode": "ralplan",
+  "iteration": 1,
+  "max_iterations": 5,
+  "plan_path": ".omc/plans/threshold-tuning.md",
+  "current_phase": "complete",
+  "started_at": "2026-01-21T10:20:00Z",
+  "completed_at": "2026-01-21T10:25:00Z",
+  "task_description": "Set proper thresholds for diff and shift operations to avoid performance regression",
+  "verdict": "APPROVED"
+}

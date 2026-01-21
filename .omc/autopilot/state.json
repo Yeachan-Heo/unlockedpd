@@ -1,0 +1,9 @@
+{
+  "phase": "COMPLETE",
+  "started_at": "2026-01-21T09:15:00Z",
+  "completed_at": "2026-01-21T09:45:00Z",
+  "status": "SUCCESS",
+  "tests_passed": 229,
+  "tests_skipped": 9,
+  "tests_failed": 0
+}

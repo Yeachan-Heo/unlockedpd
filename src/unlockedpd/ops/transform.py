@@ -28,6 +28,12 @@ from .._config import PARALLEL_THRESHOLD, THREADPOOL_THRESHOLD, config
 # - 10000 rows with 64 CPUs = ~156 rows per CPU (good)
 MIN_ROWS_FOR_PARALLEL = 2000
 
+# Operation-specific thresholds for memory-bound operations
+# diff and shift are pure memory operations with ~0 compute per element
+# Parallelization overhead exceeds benefit, so always use serial (but JIT-compiled)
+DIFF_PARALLEL_THRESHOLD = float('inf')   # Always serial - memory-bound
+SHIFT_PARALLEL_THRESHOLD = float('inf')  # Always serial - memory-bound
+
 
 # ============================================================================
 # ROW-PARALLEL versions (for tall arrays: rows >> cols)
@@ -498,10 +504,11 @@ def _diff_dispatch(arr: np.ndarray, periods: int) -> np.ndarray:
     n_rows = arr.shape[0]
 
     # Tier 1: Serial for small arrays or insufficient rows for parallelization
-    if arr.size < PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
+    # Note: DIFF_PARALLEL_THRESHOLD=inf forces serial for all sizes (memory-bound op)
+    if arr.size < DIFF_PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
         return _diff_serial(arr, periods)
 
-    # Tier 3: ThreadPool for very large arrays
+    # Tier 3: ThreadPool for very large arrays (unreachable with inf threshold)
     if arr.size >= THREADPOOL_THRESHOLD:
         return _diff_threadpool(arr, periods)
 
@@ -555,10 +562,11 @@ def _shift_dispatch(arr: np.ndarray, periods: int, fill_value: float) -> np.ndar
     n_rows = arr.shape[0]
 
     # Tier 1: Serial for small arrays or insufficient rows for parallelization
-    if arr.size < PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
+    # Note: SHIFT_PARALLEL_THRESHOLD=inf forces serial for all sizes (memory-bound op)
+    if arr.size < SHIFT_PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
         return _shift_serial(arr, periods, fill_value)
 
-    # Tier 3: ThreadPool for very large arrays
+    # Tier 3: ThreadPool for very large arrays (unreachable with inf threshold)
     if arr.size >= THREADPOOL_THRESHOLD:
         return _shift_threadpool(arr, periods, fill_value)
 
@@ -704,12 +712,17 @@ def optimized_shift(df, periods=1, freq=None, axis=0, fill_value=None):
 
 
 def apply_transform_patches():
-    """Apply all transform operation patches to pandas."""
+    """Apply transform operation patches to pandas.
+
+    Note: diff and shift are NOT patched because they are pure memory operations
+    where pandas' C implementation is faster than Numba JIT. Only pct_change
+    provides meaningful speedup (1.14x on 100MB DataFrames).
+    """
     from .._patch import patch
 
-    patch(pd.DataFrame, 'diff', optimized_diff)
+    # Only patch pct_change - it has enough computation to benefit from JIT
+    # diff and shift are memory-bound and pandas' C code is faster
     patch(pd.DataFrame, 'pct_change', optimized_pct_change)
-    patch(pd.DataFrame, 'shift', optimized_shift)
 
 
 # Backwards compatibility aliases
