@@ -4,17 +4,20 @@ This module provides Numba-accelerated statistical operations (skewness, kurtosi
 that parallelize across columns for significant speedup on wide DataFrames.
 
 Uses online algorithms for numerical stability when computing higher moments.
+
+Implementation tiers:
+1. Serial Numba JIT for small arrays
+2. Parallel prange for medium arrays
+3. ThreadPool + Numba nogil for large arrays (true parallelism)
 """
 import numpy as np
 from numba import njit, prange
 import pandas as pd
 from typing import Union, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 from .._compat import get_numeric_columns, wrap_result, ensure_float64, ensure_optimal_layout
-
-# Threshold for parallel vs serial execution (elements)
-# Parallel overhead is ~1-2ms, so we need enough work to amortize it
-PARALLEL_THRESHOLD = 500_000
+from .._config import PARALLEL_THRESHOLD, THREADPOOL_THRESHOLD, config
 
 
 # ============================================================================
@@ -192,6 +195,134 @@ def _skew_2d_axis1_serial(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
                 std = np.sqrt(variance)
                 skew = (np.sqrt(count * (count - 1)) / (count - 2)) * (M3 / count) / (std ** 3)
                 result[row] = skew
+
+    return result
+
+
+# ============================================================================
+# Core Numba-jitted functions - SKEWNESS (NOGIL versions for ThreadPool)
+# ============================================================================
+
+@njit(nogil=True, cache=True)
+def _skew_nogil_axis0_chunk(arr: np.ndarray, result: np.ndarray, start_col: int, end_col: int, skipna: bool) -> None:
+    """Skewness computation for columns [start_col, end_col) - GIL released."""
+    n_rows = arr.shape[0]
+
+    for col in range(start_col, end_col):
+        count = 0
+        mean = 0.0
+        M2 = 0.0
+        M3 = 0.0
+
+        for row in range(n_rows):
+            val = arr[row, col]
+            if skipna and np.isnan(val):
+                continue
+
+            count += 1
+            delta = val - mean
+            delta_n = delta / count
+            delta_n2 = delta_n * delta_n
+            term1 = delta * delta_n * (count - 1)
+
+            mean += delta_n
+            M3 += term1 * delta_n * (count - 2) - 3.0 * delta_n * M2
+            M2 += term1
+
+        if count < 3:
+            result[col] = np.nan
+        else:
+            variance = M2 / (count - 1)
+            if variance < 1e-14:
+                result[col] = np.nan
+            else:
+                std = np.sqrt(variance)
+                skew = (np.sqrt(count * (count - 1)) / (count - 2)) * (M3 / count) / (std ** 3)
+                result[col] = skew
+
+
+@njit(nogil=True, cache=True)
+def _skew_nogil_axis1_chunk(arr: np.ndarray, result: np.ndarray, start_row: int, end_row: int, skipna: bool) -> None:
+    """Skewness computation for rows [start_row, end_row) - GIL released."""
+    n_cols = arr.shape[1]
+
+    for row in range(start_row, end_row):
+        count = 0
+        mean = 0.0
+        M2 = 0.0
+        M3 = 0.0
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if skipna and np.isnan(val):
+                continue
+
+            count += 1
+            delta = val - mean
+            delta_n = delta / count
+            delta_n2 = delta_n * delta_n
+            term1 = delta * delta_n * (count - 1)
+
+            mean += delta_n
+            M3 += term1 * delta_n * (count - 2) - 3.0 * delta_n * M2
+            M2 += term1
+
+        if count < 3:
+            result[row] = np.nan
+        else:
+            variance = M2 / (count - 1)
+            if variance < 1e-14:
+                result[row] = np.nan
+            else:
+                std = np.sqrt(variance)
+                skew = (np.sqrt(count * (count - 1)) / (count - 2)) * (M3 / count) / (std ** 3)
+                result[row] = skew
+
+
+# ============================================================================
+# ThreadPool wrapper functions for SKEWNESS
+# ============================================================================
+
+def _skew_axis0_threadpool(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
+    """Compute skewness for each column using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.float64)
+    result[:] = np.nan
+
+    max_workers = config.threadpool_workers
+    chunk_size = max(1, (n_cols + max_workers - 1) // max_workers)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _skew_nogil_axis0_chunk(arr, result, start_col, end_col, skipna)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
+              for i in range(max_workers) if i * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+def _skew_axis1_threadpool(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
+    """Compute skewness for each row using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+    result[:] = np.nan
+
+    max_workers = config.threadpool_workers
+    chunk_size = max(1, (n_rows + max_workers - 1) // max_workers)
+
+    def process_chunk(args):
+        start_row, end_row = args
+        _skew_nogil_axis1_chunk(arr, result, start_row, end_row, skipna)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_rows))
+              for i in range(max_workers) if i * chunk_size < n_rows]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -386,6 +517,140 @@ def _kurt_2d_axis1_serial(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
 
 
 # ============================================================================
+# Core Numba-jitted functions - KURTOSIS (NOGIL versions for ThreadPool)
+# ============================================================================
+
+@njit(nogil=True, cache=True)
+def _kurt_nogil_axis0_chunk(arr: np.ndarray, result: np.ndarray, start_col: int, end_col: int, skipna: bool) -> None:
+    """Kurtosis computation for columns [start_col, end_col) - GIL released."""
+    n_rows = arr.shape[0]
+
+    for col in range(start_col, end_col):
+        count = 0
+        mean = 0.0
+        M2 = 0.0
+        M3 = 0.0
+        M4 = 0.0
+
+        for row in range(n_rows):
+            val = arr[row, col]
+            if skipna and np.isnan(val):
+                continue
+
+            count += 1
+            delta = val - mean
+            delta_n = delta / count
+            delta_n2 = delta_n * delta_n
+            term1 = delta * delta_n * (count - 1)
+
+            mean += delta_n
+            M4 += (term1 * delta_n2 * (count * count - 3 * count + 3) +
+                   6.0 * delta_n2 * M2 - 4.0 * delta_n * M3)
+            M3 += term1 * delta_n * (count - 2) - 3.0 * delta_n * M2
+            M2 += term1
+
+        if count < 4:
+            result[col] = np.nan
+        else:
+            variance = M2 / (count - 1)
+            if variance < 1e-14:
+                result[col] = np.nan
+            else:
+                kurt = ((count - 1) * ((count + 1) * M4 / (M2 * M2) - 3 * (count - 1)) /
+                        ((count - 2) * (count - 3)))
+                result[col] = kurt
+
+
+@njit(nogil=True, cache=True)
+def _kurt_nogil_axis1_chunk(arr: np.ndarray, result: np.ndarray, start_row: int, end_row: int, skipna: bool) -> None:
+    """Kurtosis computation for rows [start_row, end_row) - GIL released."""
+    n_cols = arr.shape[1]
+
+    for row in range(start_row, end_row):
+        count = 0
+        mean = 0.0
+        M2 = 0.0
+        M3 = 0.0
+        M4 = 0.0
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if skipna and np.isnan(val):
+                continue
+
+            count += 1
+            delta = val - mean
+            delta_n = delta / count
+            delta_n2 = delta_n * delta_n
+            term1 = delta * delta_n * (count - 1)
+
+            mean += delta_n
+            M4 += (term1 * delta_n2 * (count * count - 3 * count + 3) +
+                   6.0 * delta_n2 * M2 - 4.0 * delta_n * M3)
+            M3 += term1 * delta_n * (count - 2) - 3.0 * delta_n * M2
+            M2 += term1
+
+        if count < 4:
+            result[row] = np.nan
+        else:
+            variance = M2 / (count - 1)
+            if variance < 1e-14:
+                result[row] = np.nan
+            else:
+                kurt = ((count - 1) * ((count + 1) * M4 / (M2 * M2) - 3 * (count - 1)) /
+                        ((count - 2) * (count - 3)))
+                result[row] = kurt
+
+
+# ============================================================================
+# ThreadPool wrapper functions for KURTOSIS
+# ============================================================================
+
+def _kurt_axis0_threadpool(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
+    """Compute kurtosis for each column using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.float64)
+    result[:] = np.nan
+
+    max_workers = config.threadpool_workers
+    chunk_size = max(1, (n_cols + max_workers - 1) // max_workers)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _kurt_nogil_axis0_chunk(arr, result, start_col, end_col, skipna)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
+              for i in range(max_workers) if i * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+def _kurt_axis1_threadpool(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
+    """Compute kurtosis for each row using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+    result[:] = np.nan
+
+    max_workers = config.threadpool_workers
+    chunk_size = max(1, (n_rows + max_workers - 1) // max_workers)
+
+    def process_chunk(args):
+        start_row, end_row = args
+        _kurt_nogil_axis1_chunk(arr, result, start_row, end_row, skipna)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_rows))
+              for i in range(max_workers) if i * chunk_size < n_rows]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+# ============================================================================
 # Core Numba-jitted functions - SEM (Standard Error of Mean) (PARALLEL versions)
 # ============================================================================
 
@@ -529,49 +794,221 @@ def _sem_2d_axis1_serial(arr: np.ndarray, skipna: bool = True, ddof: int = 1) ->
 
 
 # ============================================================================
+# Core Numba-jitted functions - SEM (NOGIL versions for ThreadPool)
+# ============================================================================
+
+@njit(nogil=True, cache=True)
+def _sem_nogil_axis0_chunk(arr: np.ndarray, result: np.ndarray, start_col: int, end_col: int, skipna: bool, ddof: int) -> None:
+    """SEM computation for columns [start_col, end_col) - GIL released."""
+    n_rows = arr.shape[0]
+
+    for col in range(start_col, end_col):
+        count = 0
+        mean = 0.0
+        M2 = 0.0
+
+        for row in range(n_rows):
+            val = arr[row, col]
+            if skipna and np.isnan(val):
+                continue
+
+            count += 1
+            delta = val - mean
+            mean += delta / count
+            delta2 = val - mean
+            M2 += delta * delta2
+
+        if count <= ddof:
+            result[col] = np.nan
+        else:
+            variance = M2 / (count - ddof)
+            std = np.sqrt(variance)
+            sem = std / np.sqrt(count)
+            result[col] = sem
+
+
+@njit(nogil=True, cache=True)
+def _sem_nogil_axis1_chunk(arr: np.ndarray, result: np.ndarray, start_row: int, end_row: int, skipna: bool, ddof: int) -> None:
+    """SEM computation for rows [start_row, end_row) - GIL released."""
+    n_cols = arr.shape[1]
+
+    for row in range(start_row, end_row):
+        count = 0
+        mean = 0.0
+        M2 = 0.0
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if skipna and np.isnan(val):
+                continue
+
+            count += 1
+            delta = val - mean
+            mean += delta / count
+            delta2 = val - mean
+            M2 += delta * delta2
+
+        if count <= ddof:
+            result[row] = np.nan
+        else:
+            variance = M2 / (count - ddof)
+            std = np.sqrt(variance)
+            sem = std / np.sqrt(count)
+            result[row] = sem
+
+
+# ============================================================================
+# ThreadPool wrapper functions for SEM
+# ============================================================================
+
+def _sem_axis0_threadpool(arr: np.ndarray, skipna: bool = True, ddof: int = 1) -> np.ndarray:
+    """Compute SEM for each column using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.float64)
+    result[:] = np.nan
+
+    max_workers = config.threadpool_workers
+    chunk_size = max(1, (n_cols + max_workers - 1) // max_workers)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _sem_nogil_axis0_chunk(arr, result, start_col, end_col, skipna, ddof)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
+              for i in range(max_workers) if i * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+def _sem_axis1_threadpool(arr: np.ndarray, skipna: bool = True, ddof: int = 1) -> np.ndarray:
+    """Compute SEM for each row using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+    result[:] = np.nan
+
+    max_workers = config.threadpool_workers
+    chunk_size = max(1, (n_rows + max_workers - 1) // max_workers)
+
+    def process_chunk(args):
+        start_row, end_row = args
+        _sem_nogil_axis1_chunk(arr, result, start_row, end_row, skipna, ddof)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_rows))
+              for i in range(max_workers) if i * chunk_size < n_rows]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+# ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
 # ============================================================================
 
 def _skew_axis0_dispatch(arr, skipna):
-    """Dispatch to serial or parallel skewness based on array size."""
-    if arr.size < PARALLEL_THRESHOLD:
+    """Dispatch to serial/parallel/threadpool skewness based on array size.
+
+    - Small arrays: serial (avoid parallel overhead)
+    - Medium arrays: prange parallel
+    - Large arrays: ThreadPool + nogil (best for huge arrays)
+    """
+    total_elements = arr.size
+
+    if total_elements < PARALLEL_THRESHOLD:
         return _skew_2d_axis0_serial(arr, skipna)
-    return _skew_2d_axis0(arr, skipna)
+    elif total_elements < THREADPOOL_THRESHOLD:
+        return _skew_2d_axis0(arr, skipna)
+    else:
+        return _skew_axis0_threadpool(arr, skipna)
 
 
 def _skew_axis1_dispatch(arr, skipna):
-    """Dispatch to serial or parallel skewness based on array size."""
-    if arr.size < PARALLEL_THRESHOLD:
+    """Dispatch to serial/parallel/threadpool skewness based on array size.
+
+    - Small arrays: serial (avoid parallel overhead)
+    - Medium arrays: prange parallel
+    - Large arrays: ThreadPool + nogil (best for huge arrays)
+    """
+    total_elements = arr.size
+
+    if total_elements < PARALLEL_THRESHOLD:
         return _skew_2d_axis1_serial(arr, skipna)
-    return _skew_2d_axis1(arr, skipna)
+    elif total_elements < THREADPOOL_THRESHOLD:
+        return _skew_2d_axis1(arr, skipna)
+    else:
+        return _skew_axis1_threadpool(arr, skipna)
 
 
 def _kurt_axis0_dispatch(arr, skipna):
-    """Dispatch to serial or parallel kurtosis based on array size."""
-    if arr.size < PARALLEL_THRESHOLD:
+    """Dispatch to serial/parallel/threadpool kurtosis based on array size.
+
+    - Small arrays: serial (avoid parallel overhead)
+    - Medium arrays: prange parallel
+    - Large arrays: ThreadPool + nogil (best for huge arrays)
+    """
+    total_elements = arr.size
+
+    if total_elements < PARALLEL_THRESHOLD:
         return _kurt_2d_axis0_serial(arr, skipna)
-    return _kurt_2d_axis0(arr, skipna)
+    elif total_elements < THREADPOOL_THRESHOLD:
+        return _kurt_2d_axis0(arr, skipna)
+    else:
+        return _kurt_axis0_threadpool(arr, skipna)
 
 
 def _kurt_axis1_dispatch(arr, skipna):
-    """Dispatch to serial or parallel kurtosis based on array size."""
-    if arr.size < PARALLEL_THRESHOLD:
+    """Dispatch to serial/parallel/threadpool kurtosis based on array size.
+
+    - Small arrays: serial (avoid parallel overhead)
+    - Medium arrays: prange parallel
+    - Large arrays: ThreadPool + nogil (best for huge arrays)
+    """
+    total_elements = arr.size
+
+    if total_elements < PARALLEL_THRESHOLD:
         return _kurt_2d_axis1_serial(arr, skipna)
-    return _kurt_2d_axis1(arr, skipna)
+    elif total_elements < THREADPOOL_THRESHOLD:
+        return _kurt_2d_axis1(arr, skipna)
+    else:
+        return _kurt_axis1_threadpool(arr, skipna)
 
 
 def _sem_axis0_dispatch(arr, skipna, ddof):
-    """Dispatch to serial or parallel SEM based on array size."""
-    if arr.size < PARALLEL_THRESHOLD:
+    """Dispatch to serial/parallel/threadpool SEM based on array size.
+
+    - Small arrays: serial (avoid parallel overhead)
+    - Medium arrays: prange parallel
+    - Large arrays: ThreadPool + nogil (best for huge arrays)
+    """
+    total_elements = arr.size
+
+    if total_elements < PARALLEL_THRESHOLD:
         return _sem_2d_axis0_serial(arr, skipna, ddof)
-    return _sem_2d_axis0(arr, skipna, ddof)
+    elif total_elements < THREADPOOL_THRESHOLD:
+        return _sem_2d_axis0(arr, skipna, ddof)
+    else:
+        return _sem_axis0_threadpool(arr, skipna, ddof)
 
 
 def _sem_axis1_dispatch(arr, skipna, ddof):
-    """Dispatch to serial or parallel SEM based on array size."""
-    if arr.size < PARALLEL_THRESHOLD:
+    """Dispatch to serial/parallel/threadpool SEM based on array size.
+
+    - Small arrays: serial (avoid parallel overhead)
+    - Medium arrays: prange parallel
+    - Large arrays: ThreadPool + nogil (best for huge arrays)
+    """
+    total_elements = arr.size
+
+    if total_elements < PARALLEL_THRESHOLD:
         return _sem_2d_axis1_serial(arr, skipna, ddof)
-    return _sem_2d_axis1(arr, skipna, ddof)
+    elif total_elements < THREADPOOL_THRESHOLD:
+        return _sem_2d_axis1(arr, skipna, ddof)
+    else:
+        return _sem_axis1_threadpool(arr, skipna, ddof)
 
 
 # ============================================================================

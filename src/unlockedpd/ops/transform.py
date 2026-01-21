@@ -1,25 +1,26 @@
 """Parallel transform operations using Numba.
 
 This module provides Numba-accelerated transform operations (diff, pct_change, shift)
-with SHAPE-ADAPTIVE parallelization - automatically chooses row vs column parallel
+with 3-TIER DISPATCH:
+  1. Serial: Small arrays (< PARALLEL_THRESHOLD)
+  2. Numba parallel (prange): Medium arrays (PARALLEL_THRESHOLD to THREADPOOL_THRESHOLD)
+  3. ThreadPool + nogil: Large arrays (>= THREADPOOL_THRESHOLD)
+
+Shape-adaptive parallelization automatically chooses row vs column parallel
 based on array dimensions for maximum CPU utilization.
 """
 import numpy as np
 from numba import njit, prange
 import pandas as pd
 from typing import Union, Any
+from concurrent.futures import ThreadPoolExecutor
 
 from .._compat import (
     get_numeric_columns, get_numeric_columns_fast, is_all_numeric,
     wrap_result, wrap_result_fast, ensure_float64,
     get_optimal_parallel_axis, prepare_array_for_parallel
 )
-
-# Threshold for parallel vs serial execution (elements)
-# Parallel overhead is ~1-2ms, so we need enough work to amortize it.
-# Testing shows crossover around 1-8M elements for narrow arrays.
-# Use 500K as a reasonable default - serial is still very fast.
-PARALLEL_THRESHOLD = 500_000
+from .._config import PARALLEL_THRESHOLD, THREADPOOL_THRESHOLD, config
 
 # Minimum rows for row-parallel to be effective
 # With fewer rows, parallel overhead dominates. Testing shows:
@@ -321,11 +322,173 @@ def _shift_serial(arr: np.ndarray, periods: int = 1, fill_value: float = np.nan)
 
 
 # ============================================================================
-# Shape-adaptive dispatch functions
+# NOGIL kernels for ThreadPool execution (process column chunks)
+# These release the GIL, allowing true parallelism from Python threads
+# ============================================================================
+
+@njit(nogil=True, cache=True)
+def _diff_nogil(arr: np.ndarray, col_start: int, col_end: int, out: np.ndarray, periods: int) -> None:
+    """Compute diff for columns [col_start, col_end), releasing GIL."""
+    n_rows = arr.shape[0]
+
+    if periods > 0:
+        for col in range(col_start, col_end):
+            for row in range(periods):
+                out[row, col] = np.nan
+            for row in range(periods, n_rows):
+                out[row, col] = arr[row, col] - arr[row - periods, col]
+    else:
+        abs_periods = -periods
+        for col in range(col_start, col_end):
+            for row in range(n_rows - abs_periods, n_rows):
+                out[row, col] = np.nan
+            for row in range(n_rows - abs_periods):
+                out[row, col] = arr[row, col] - arr[row + abs_periods, col]
+
+
+@njit(nogil=True, cache=True)
+def _pct_change_nogil(arr: np.ndarray, col_start: int, col_end: int, out: np.ndarray, periods: int) -> None:
+    """Compute pct_change for columns [col_start, col_end), releasing GIL."""
+    n_rows = arr.shape[0]
+
+    if periods > 0:
+        for col in range(col_start, col_end):
+            for row in range(periods):
+                out[row, col] = np.nan
+            for row in range(periods, n_rows):
+                old_val = arr[row - periods, col]
+                new_val = arr[row, col]
+                if np.isnan(old_val) or np.isnan(new_val):
+                    out[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        out[row, col] = np.nan
+                    else:
+                        out[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    out[row, col] = (new_val - old_val) / old_val
+    else:
+        abs_periods = -periods
+        for col in range(col_start, col_end):
+            for row in range(n_rows - abs_periods, n_rows):
+                out[row, col] = np.nan
+            for row in range(n_rows - abs_periods):
+                old_val = arr[row + abs_periods, col]
+                new_val = arr[row, col]
+                if np.isnan(old_val) or np.isnan(new_val):
+                    out[row, col] = np.nan
+                elif old_val == 0.0:
+                    if new_val == 0.0:
+                        out[row, col] = np.nan
+                    else:
+                        out[row, col] = np.inf if new_val > 0 else -np.inf
+                else:
+                    out[row, col] = (new_val - old_val) / old_val
+
+
+@njit(nogil=True, cache=True)
+def _shift_nogil(arr: np.ndarray, col_start: int, col_end: int, out: np.ndarray, periods: int, fill_value: float) -> None:
+    """Compute shift for columns [col_start, col_end), releasing GIL."""
+    n_rows = arr.shape[0]
+
+    if periods > 0:
+        for col in range(col_start, col_end):
+            for row in range(periods):
+                out[row, col] = fill_value
+            for row in range(periods, n_rows):
+                out[row, col] = arr[row - periods, col]
+    elif periods < 0:
+        abs_periods = -periods
+        for col in range(col_start, col_end):
+            for row in range(n_rows - abs_periods, n_rows):
+                out[row, col] = fill_value
+            for row in range(n_rows - abs_periods):
+                out[row, col] = arr[row + abs_periods, col]
+    else:
+        for col in range(col_start, col_end):
+            for row in range(n_rows):
+                out[row, col] = arr[row, col]
+
+
+# ============================================================================
+# ThreadPool dispatch functions (for very large arrays >= THREADPOOL_THRESHOLD)
+# Uses ThreadPoolExecutor + nogil kernels for true parallel execution
+# ============================================================================
+
+def _diff_threadpool(arr: np.ndarray, periods: int) -> np.ndarray:
+    """Compute diff using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+
+    n_workers = config.threadpool_workers
+    chunk_size = max(1, (n_cols + n_workers - 1) // n_workers)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = []
+        for i in range(n_workers):
+            col_start = i * chunk_size
+            col_end = min((i + 1) * chunk_size, n_cols)
+            if col_start < n_cols:
+                futures.append(executor.submit(_diff_nogil, arr, col_start, col_end, result, periods))
+        for f in futures:
+            f.result()
+
+    return result
+
+
+def _pct_change_threadpool(arr: np.ndarray, periods: int) -> np.ndarray:
+    """Compute pct_change using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+
+    n_workers = config.threadpool_workers
+    chunk_size = max(1, (n_cols + n_workers - 1) // n_workers)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = []
+        for i in range(n_workers):
+            col_start = i * chunk_size
+            col_end = min((i + 1) * chunk_size, n_cols)
+            if col_start < n_cols:
+                futures.append(executor.submit(_pct_change_nogil, arr, col_start, col_end, result, periods))
+        for f in futures:
+            f.result()
+
+    return result
+
+
+def _shift_threadpool(arr: np.ndarray, periods: int, fill_value: float) -> np.ndarray:
+    """Compute shift using ThreadPool + nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+
+    n_workers = config.threadpool_workers
+    chunk_size = max(1, (n_cols + n_workers - 1) // n_workers)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = []
+        for i in range(n_workers):
+            col_start = i * chunk_size
+            col_end = min((i + 1) * chunk_size, n_cols)
+            if col_start < n_cols:
+                futures.append(executor.submit(_shift_nogil, arr, col_start, col_end, result, periods, fill_value))
+        for f in futures:
+            f.result()
+
+    return result
+
+
+# ============================================================================
+# Shape-adaptive dispatch functions (3-tier: serial/parallel/threadpool)
 # ============================================================================
 
 def _diff_dispatch(arr: np.ndarray, periods: int) -> np.ndarray:
     """Dispatch to optimal diff implementation based on array shape.
+
+    3-TIER DISPATCH:
+    1. Serial: Small arrays (< PARALLEL_THRESHOLD)
+    2. Numba parallel (prange): Medium arrays (PARALLEL_THRESHOLD to THREADPOOL_THRESHOLD)
+    3. ThreadPool + nogil: Large arrays (>= THREADPOOL_THRESHOLD)
 
     For C-contiguous arrays, ALWAYS use row-parallel because:
     1. Row elements are contiguous in memory → excellent cache utilization
@@ -334,10 +497,15 @@ def _diff_dispatch(arr: np.ndarray, periods: int) -> np.ndarray:
     """
     n_rows = arr.shape[0]
 
-    # Use serial for small arrays or insufficient rows for parallelization
+    # Tier 1: Serial for small arrays or insufficient rows for parallelization
     if arr.size < PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
         return _diff_serial(arr, periods)
 
+    # Tier 3: ThreadPool for very large arrays
+    if arr.size >= THREADPOOL_THRESHOLD:
+        return _diff_threadpool(arr, periods)
+
+    # Tier 2: Numba parallel for medium arrays
     # For C-contiguous (row-major) arrays, row-parallel is always faster
     # due to memory access patterns. Column-parallel only makes sense
     # for F-contiguous (column-major) arrays.
@@ -350,13 +518,24 @@ def _diff_dispatch(arr: np.ndarray, periods: int) -> np.ndarray:
 def _pct_change_dispatch(arr: np.ndarray, periods: int) -> np.ndarray:
     """Dispatch to optimal pct_change implementation based on array shape.
 
+    3-TIER DISPATCH:
+    1. Serial: Small arrays (< PARALLEL_THRESHOLD)
+    2. Numba parallel (prange): Medium arrays (PARALLEL_THRESHOLD to THREADPOOL_THRESHOLD)
+    3. ThreadPool + nogil: Large arrays (>= THREADPOOL_THRESHOLD)
+
     For C-contiguous arrays, ALWAYS use row-parallel for cache efficiency.
     """
     n_rows = arr.shape[0]
 
+    # Tier 1: Serial for small arrays or insufficient rows for parallelization
     if arr.size < PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
         return _pct_change_serial(arr, periods)
 
+    # Tier 3: ThreadPool for very large arrays
+    if arr.size >= THREADPOOL_THRESHOLD:
+        return _pct_change_threadpool(arr, periods)
+
+    # Tier 2: Numba parallel for medium arrays
     if arr.flags['C_CONTIGUOUS'] or not arr.flags['F_CONTIGUOUS']:
         return _pct_change_row_parallel(arr, periods)
     else:
@@ -366,13 +545,24 @@ def _pct_change_dispatch(arr: np.ndarray, periods: int) -> np.ndarray:
 def _shift_dispatch(arr: np.ndarray, periods: int, fill_value: float) -> np.ndarray:
     """Dispatch to optimal shift implementation based on array shape.
 
+    3-TIER DISPATCH:
+    1. Serial: Small arrays (< PARALLEL_THRESHOLD)
+    2. Numba parallel (prange): Medium arrays (PARALLEL_THRESHOLD to THREADPOOL_THRESHOLD)
+    3. ThreadPool + nogil: Large arrays (>= THREADPOOL_THRESHOLD)
+
     For C-contiguous arrays, ALWAYS use row-parallel for cache efficiency.
     """
     n_rows = arr.shape[0]
 
+    # Tier 1: Serial for small arrays or insufficient rows for parallelization
     if arr.size < PARALLEL_THRESHOLD or n_rows < MIN_ROWS_FOR_PARALLEL:
         return _shift_serial(arr, periods, fill_value)
 
+    # Tier 3: ThreadPool for very large arrays
+    if arr.size >= THREADPOOL_THRESHOLD:
+        return _shift_threadpool(arr, periods, fill_value)
+
+    # Tier 2: Numba parallel for medium arrays
     if arr.flags['C_CONTIGUOUS'] or not arr.flags['F_CONTIGUOUS']:
         return _shift_row_parallel(arr, periods, fill_value)
     else:

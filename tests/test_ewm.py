@@ -1,8 +1,4 @@
-"""Tests for exponentially weighted moving operations.
-
-Note: EWM operations are not yet implemented.
-This file serves as a placeholder for future tests.
-"""
+"""Tests for exponentially weighted moving operations."""
 import pytest
 import pandas as pd
 import numpy as np
@@ -11,7 +7,6 @@ import numpy as np
 class TestEWMMean:
     """Tests for ewm().mean()"""
 
-    @pytest.mark.skip(reason="EWM operations not yet implemented")
     def test_basic_ewm_mean(self):
         """Test basic EWM mean matches pandas."""
         import unlockedpd
@@ -26,7 +21,6 @@ class TestEWMMean:
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="EWM operations not yet implemented")
     def test_ewm_mean_with_nan(self):
         """Test EWM mean handles NaN correctly."""
         import unlockedpd
@@ -44,7 +38,6 @@ class TestEWMMean:
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="EWM operations not yet implemented")
     def test_ewm_mean_halflife(self):
         """Test EWM mean with halflife parameter."""
         import unlockedpd
@@ -59,7 +52,6 @@ class TestEWMMean:
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
-    @pytest.mark.skip(reason="EWM operations not yet implemented")
     def test_ewm_mean_alpha(self):
         """Test EWM mean with alpha parameter."""
         import unlockedpd
@@ -78,7 +70,6 @@ class TestEWMMean:
 class TestEWMStd:
     """Tests for ewm().std()"""
 
-    @pytest.mark.skip(reason="EWM operations not yet implemented")
     def test_basic_ewm_std(self):
         """Test basic EWM std matches pandas."""
         import unlockedpd
@@ -97,7 +88,6 @@ class TestEWMStd:
 class TestEWMVar:
     """Tests for ewm().var()"""
 
-    @pytest.mark.skip(reason="EWM operations not yet implemented")
     def test_basic_ewm_var(self):
         """Test basic EWM var matches pandas."""
         import unlockedpd

@@ -89,6 +89,34 @@ def _apply_all_patches():
     from .ops.ewm import apply_ewm_patches
     apply_ewm_patches()
 
+    # NEW: Aggregation operations (sum, mean, std, var, min, max, median, prod)
+    from .ops.aggregations import apply_aggregation_patches
+    apply_aggregation_patches()
+
+    # NEW: Fill operations (ffill, bfill, fillna)
+    from .ops.fillna import apply_fillna_patches
+    apply_fillna_patches()
+
+    # NEW: Element-wise operations (clip, abs, round)
+    from .ops.element_wise import apply_element_wise_patches
+    apply_element_wise_patches()
+
+    # NEW: Correlation operations (corr, cov)
+    from .ops.correlation import apply_correlation_patches
+    apply_correlation_patches()
+
+    # NEW: Quantile operations
+    from .ops.quantile import apply_quantile_patches
+    apply_quantile_patches()
+
+    # NEW: Agg/Aggregate operations
+    from .ops.agg import apply_agg_patches
+    apply_agg_patches()
+
+    # NEW: DataFrame.transform() operations
+    from .ops.dataframe_transform import apply_dataframe_transform_patches
+    apply_dataframe_transform_patches()
+
 
 def _warmup_all():
     """Pre-compile all Numba functions to avoid first-call overhead."""

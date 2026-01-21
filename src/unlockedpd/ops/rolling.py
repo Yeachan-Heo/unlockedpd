@@ -15,18 +15,19 @@ from typing import Union
 from concurrent.futures import ThreadPoolExecutor
 
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._config import PARALLEL_THRESHOLD, THREADPOOL_THRESHOLD, config
 from ._welford import (
     rolling_std_welford_parallel,
     rolling_std_welford_serial,
     rolling_var_welford_parallel,
     rolling_var_welford_serial,
 )
-
-# Threshold for parallel vs serial execution (elements)
-PARALLEL_THRESHOLD = 500_000
-
-# Threshold for ThreadPool (larger arrays benefit more)
-THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
+from ._minmax_deque import (
+    rolling_min_deque_parallel,
+    rolling_min_deque_serial,
+    rolling_max_deque_parallel,
+    rolling_max_deque_serial,
+)
 
 # Adaptive worker count for ThreadPool (capped for memory bandwidth)
 import os
@@ -734,6 +735,79 @@ def _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_p
                 result[row, c] = np.nan
 
 
+@njit(cache=True)
+def _rolling_median_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+    """Serial rolling median using insertion sort for small arrays."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    for col in range(n_cols):
+        buffer = np.empty(window, dtype=np.float64)
+
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                continue
+
+            start = max(0, row - window + 1)
+            count = 0
+            for k in range(start, row + 1):
+                val = arr[k, col]
+                if not np.isnan(val):
+                    # Insertion sort into buffer
+                    i = count
+                    while i > 0 and buffer[i - 1] > val:
+                        buffer[i] = buffer[i - 1]
+                        i -= 1
+                    buffer[i] = val
+                    count += 1
+
+            if count >= min_periods:
+                if count % 2 == 1:
+                    result[row, col] = buffer[count // 2]
+                else:
+                    result[row, col] = (buffer[count // 2 - 1] + buffer[count // 2]) / 2.0
+
+    return result
+
+
+@njit(cache=True)
+def _rolling_quantile_2d_serial(arr: np.ndarray, window: int, min_periods: int, quantile: float) -> np.ndarray:
+    """Serial rolling quantile using insertion sort for small arrays."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    result[:] = np.nan
+
+    for col in range(n_cols):
+        buffer = np.empty(window, dtype=np.float64)
+
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                continue
+
+            start = max(0, row - window + 1)
+            count = 0
+            for k in range(start, row + 1):
+                val = arr[k, col]
+                if not np.isnan(val):
+                    i = count
+                    while i > 0 and buffer[i - 1] > val:
+                        buffer[i] = buffer[i - 1]
+                        i -= 1
+                    buffer[i] = val
+                    count += 1
+
+            if count >= min_periods:
+                # Linear interpolation for quantile
+                idx = quantile * (count - 1)
+                lower = int(idx)
+                upper = min(lower + 1, count - 1)
+                frac = idx - lower
+                result[row, col] = buffer[lower] * (1 - frac) + buffer[upper] * frac
+
+    return result
+
+
 @njit(parallel=True, cache=True)
 def _rolling_skew_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
     """Compute rolling skewness across columns in parallel using online moments."""
@@ -1303,14 +1377,14 @@ def _rolling_median_dispatch(arr, window, min_periods):
     if arr.size >= THREADPOOL_THRESHOLD:
         return _rolling_median_threadpool(arr, window, min_periods)
     # For smaller arrays, use serial version
-    return _rolling_median_threadpool(arr, window, min_periods)  # Always use optimized
+    return _rolling_median_2d_serial(arr, window, min_periods)
 
 
 def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
     """Dispatch to ThreadPool for large arrays."""
     if arr.size >= THREADPOOL_THRESHOLD:
         return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
-    return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
+    return _rolling_quantile_2d_serial(arr, window, min_periods, quantile)
 
 
 # ============================================================================
