@@ -25,7 +25,7 @@ Configuration:
     # UNLOCKEDPD_PARALLEL_THRESHOLD=10000
 """
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 # Import configuration
 from ._config import config
@@ -69,6 +69,10 @@ def _apply_all_patches():
     # Transform operations: diff 1.0-1.7x, shift 1.0-1.5x, pct_change 11x
     apply_transform_patches()
 
+    # DataFrame.transform() for element-wise ufuncs (abs, sqrt, exp, etc.)
+    from .ops.dataframe_transform import apply_dataframe_transform_patches
+    apply_dataframe_transform_patches()
+
     # Rank: axis=0 is 1.4x faster, axis=1 is 8-10x faster (row-parallel)
     apply_rank_patches()
 
@@ -88,6 +92,14 @@ def _apply_all_patches():
     # EWM operations with nogil kernels
     from .ops.ewm import apply_ewm_patches
     apply_ewm_patches()
+
+    # Aggregation operations (sum, mean, std, var, min, max, median, prod)
+    from .ops.aggregations import apply_aggregation_patches
+    apply_aggregation_patches()
+
+    # DataFrame.agg() / aggregate() dispatching to optimized aggregations
+    from .ops.agg import apply_agg_patches
+    apply_agg_patches()
 
 
 def _warmup_all():
