@@ -866,5 +866,118 @@ class TestRankCompatibility:
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
 
 
+class TestWrapResultFragmentation:
+    """Test wrap_result function for DataFrame fragmentation issues."""
+
+    def test_wrap_result_no_fragmentation_warning(self):
+        """Test that merge_non_numeric doesn't trigger fragmentation warning."""
+        from unlockedpd._compat import wrap_result
+
+        # Test with object dtype
+        df_object = pd.DataFrame({
+            'a': [1, 2, 3],
+            'b': [4, 5, 6],
+            'c': ['x', 'y', 'z']  # object dtype
+        })
+
+        # Extract numeric columns
+        numeric_cols = ['a', 'b']
+        numeric_df = df_object[numeric_cols]
+        result = numeric_df.values * 2
+
+        # Wrap result with merge_non_numeric=True
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            wrapped = wrap_result(
+                result,
+                numeric_df,
+                columns=numeric_cols,
+                merge_non_numeric=True,
+                original_df=df_object
+            )
+
+            # Verify no PerformanceWarning
+            perf_warnings = [x for x in w if issubclass(x.category, pd.errors.PerformanceWarning)]
+            assert len(perf_warnings) == 0, f"Got fragmentation warning: {perf_warnings}"
+
+        # Verify correct behavior
+        assert list(wrapped.columns) == ['a', 'b', 'c']  # original order
+        assert wrapped['c'].isna().all()  # non-numeric filled with NaN
+        assert (wrapped[['a', 'b']] == result).all().all()  # numeric values correct
+
+    def test_wrap_result_mixed_non_numeric_dtypes(self):
+        """Test that merge_non_numeric handles datetime and categorical dtypes correctly."""
+        from unlockedpd._compat import wrap_result
+
+        # Create DataFrame with multiple non-numeric dtypes
+        df_mixed = pd.DataFrame({
+            'num1': [1, 2, 3],
+            'num2': [4, 5, 6],
+            'str_col': ['x', 'y', 'z'],  # object dtype
+            'date_col': pd.to_datetime(['2020-01-01', '2020-01-02', '2020-01-03']),  # datetime
+            'cat_col': pd.Categorical(['A', 'B', 'C'])  # categorical
+        })
+
+        numeric_cols = ['num1', 'num2']
+        numeric_df = df_mixed[numeric_cols]
+        result = numeric_df.values * 2
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            wrapped = wrap_result(
+                result,
+                numeric_df,
+                columns=numeric_cols,
+                merge_non_numeric=True,
+                original_df=df_mixed
+            )
+
+            # Verify no PerformanceWarning
+            perf_warnings = [x for x in w if issubclass(x.category, pd.errors.PerformanceWarning)]
+            assert len(perf_warnings) == 0, f"Got fragmentation warning: {perf_warnings}"
+
+        # Verify correct behavior for all dtypes
+        assert list(wrapped.columns) == list(df_mixed.columns)  # original order
+        assert wrapped['str_col'].isna().all()  # object dtype filled with NaN
+        assert wrapped['date_col'].isna().all()  # datetime dtype filled with NaN
+        assert wrapped['cat_col'].isna().all()  # categorical dtype filled with NaN
+        assert (wrapped[['num1', 'num2']] == result).all().all()  # numeric values correct
+
+    def test_wrap_result_many_non_numeric_columns(self):
+        """Test wrap_result with many non-numeric columns (stress test for fragmentation)."""
+        from unlockedpd._compat import wrap_result
+
+        # Create DataFrame with many non-numeric columns
+        n_non_numeric = 50
+        data = {'num': [1, 2, 3]}
+        for i in range(n_non_numeric):
+            data[f'str_{i}'] = ['x', 'y', 'z']
+
+        df = pd.DataFrame(data)
+        numeric_cols = ['num']
+        numeric_df = df[numeric_cols]
+        result = numeric_df.values * 2
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            wrapped = wrap_result(
+                result,
+                numeric_df,
+                columns=numeric_cols,
+                merge_non_numeric=True,
+                original_df=df
+            )
+
+            # Verify no PerformanceWarning even with many columns
+            perf_warnings = [x for x in w if issubclass(x.category, pd.errors.PerformanceWarning)]
+            assert len(perf_warnings) == 0, f"Got fragmentation warning with {n_non_numeric} non-numeric columns"
+
+        # Verify correct behavior
+        assert list(wrapped.columns) == list(df.columns)
+        assert (wrapped['num'] == result.flatten()).all()
+        for i in range(n_non_numeric):
+            assert wrapped[f'str_{i}'].isna().all()
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

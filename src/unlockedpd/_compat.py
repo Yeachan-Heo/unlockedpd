@@ -138,9 +138,16 @@ def wrap_result(
             # Add back non-numeric columns as NaN (matching pandas behavior for numeric ops)
             non_numeric_cols = [c for c in original_df.columns if c not in result_df.columns]
             if non_numeric_cols:
-                for col in non_numeric_cols:
-                    result_df[col] = np.nan
-                # Restore original column order (only if we added columns)
+                # Create DataFrame with NaN columns (batch operation to avoid fragmentation)
+                # Using pd.concat instead of iterative assignment prevents PerformanceWarning
+                non_numeric_df = pd.DataFrame(
+                    np.nan,
+                    index=result_df.index,
+                    columns=non_numeric_cols
+                )
+                # Concatenate in one operation instead of iterative assignment
+                result_df = pd.concat([result_df, non_numeric_df], axis=1)
+                # Restore original column order
                 result_df = result_df.reindex(columns=original_df.columns)
 
         return result_df
