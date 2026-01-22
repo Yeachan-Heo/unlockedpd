@@ -595,6 +595,10 @@ def optimized_skew(df: pd.DataFrame, axis: Union[int, str] = 0, skipna: bool = T
     Returns:
         Series (axis=0) or DataFrame (axis=1) with skewness values
     """
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     # Normalize axis parameter
     if axis in ['index', 0]:
         axis = 0
@@ -643,6 +647,10 @@ def optimized_kurt(df: pd.DataFrame, axis: Union[int, str] = 0, skipna: bool = T
     Returns:
         Series (axis=0) or DataFrame (axis=1) with kurtosis values
     """
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     # Normalize axis parameter
     if axis in ['index', 0]:
         axis = 0
@@ -692,6 +700,10 @@ def optimized_sem(df: pd.DataFrame, axis: Union[int, str] = 0, skipna: bool = Tr
     Returns:
         Series (axis=0) or DataFrame (axis=1) with SEM values
     """
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     # Normalize axis parameter
     if axis in ['index', 0]:
         axis = 0

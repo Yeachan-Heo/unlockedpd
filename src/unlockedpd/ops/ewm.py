@@ -183,6 +183,7 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
             weight_sum = 0.0
             weight_sum_sq = 0.0  # Sum of squared weights
             nobs = 0
+            has_inf = False
             last_valid_result = np.nan
 
             for row in range(n_rows):
@@ -200,6 +201,8 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
                         weight_sum_sq = weight_sum_sq * (1.0 - alpha) ** 2
                         result[row, col] = last_valid_result
                 else:
+                    if np.isinf(val):
+                        has_inf = True
                     # Decay all previous weights before adding new observation
                     weighted_sum = weighted_sum * (1.0 - alpha) + val
                     weighted_sum_sq = weighted_sum_sq * (1.0 - alpha) + val * val
@@ -209,22 +212,27 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
 
                     # Variance requires at least 2 observations
                     if nobs >= max(2, min_periods):
-                        mean = weighted_sum / weight_sum
-                        mean_sq = weighted_sum_sq / weight_sum
-                        var = mean_sq - mean * mean
+                        if has_inf:
+                            last_valid_result = np.nan
+                            result[row, col] = np.nan
+                        else:
+                            mean = weighted_sum / weight_sum
+                            mean_sq = weighted_sum_sq / weight_sum
+                            var = mean_sq - mean * mean
 
-                        # Bias correction: weight_sum^2 / (weight_sum^2 - weight_sum_sq)
-                        if not bias and nobs > 1:
-                            var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
+                            # Bias correction: weight_sum^2 / (weight_sum^2 - weight_sum_sq)
+                            if not bias and nobs > 1:
+                                var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
 
-                        last_valid_result = max(0.0, var)
-                        result[row, col] = last_valid_result
+                            last_valid_result = max(0.0, var)
+                            result[row, col] = last_valid_result
         else:
             # Recursive formula
             ewm = 0.0
             ewm_sq = 0.0
             is_first = True
             nobs = 0
+            has_inf = False
 
             for row in range(n_rows):
                 val = arr[row, col]
@@ -237,11 +245,16 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
 
                     # Carry forward previous variance
                     if nobs >= max(2, min_periods):
-                        var = ewm_sq - ewm * ewm
-                        if not bias and nobs > 1:
-                            var *= nobs / (nobs - 1.0)
-                        result[row, col] = max(0.0, var)
+                        if has_inf:
+                            result[row, col] = np.nan
+                        else:
+                            var = ewm_sq - ewm * ewm
+                            if not bias and nobs > 1:
+                                var *= nobs / (nobs - 1.0)
+                            result[row, col] = max(0.0, var)
                 else:
+                    if np.isinf(val):
+                        has_inf = True
                     if is_first:
                         ewm = val
                         ewm_sq = val * val
@@ -253,13 +266,16 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
                     nobs += 1
                     # Variance requires at least 2 observations
                     if nobs >= max(2, min_periods):
-                        var = ewm_sq - ewm * ewm
+                        if has_inf:
+                            result[row, col] = np.nan
+                        else:
+                            var = ewm_sq - ewm * ewm
 
-                        # Bias correction for recursive method
-                        if not bias and nobs > 1:
-                            var *= nobs / (nobs - 1.0)
+                            # Bias correction for recursive method
+                            if not bias and nobs > 1:
+                                var *= nobs / (nobs - 1.0)
 
-                        result[row, col] = max(0.0, var)
+                            result[row, col] = max(0.0, var)
 
     return result
 
@@ -365,6 +381,7 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
             weight_sum = 0.0
             weight_sum_sq = 0.0
             nobs = 0
+            has_inf = False
             last_valid_result = np.nan
 
             for row in range(n_rows):
@@ -381,6 +398,8 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
                         weight_sum_sq = weight_sum_sq * (1.0 - alpha) ** 2
                         result[row, col] = last_valid_result
                 else:
+                    if np.isinf(val):
+                        has_inf = True
                     # Decay all previous weights before adding new observation
                     weighted_sum = weighted_sum * (1.0 - alpha) + val
                     weighted_sum_sq = weighted_sum_sq * (1.0 - alpha) + val * val
@@ -390,20 +409,25 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
 
                     # Variance requires at least 2 observations
                     if nobs >= max(2, min_periods):
-                        mean = weighted_sum / weight_sum
-                        mean_sq = weighted_sum_sq / weight_sum
-                        var = mean_sq - mean * mean
+                        if has_inf:
+                            last_valid_result = np.nan
+                            result[row, col] = np.nan
+                        else:
+                            mean = weighted_sum / weight_sum
+                            mean_sq = weighted_sum_sq / weight_sum
+                            var = mean_sq - mean * mean
 
-                        if not bias and nobs > 1:
-                            var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
+                            if not bias and nobs > 1:
+                                var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
 
-                        last_valid_result = max(0.0, var)
-                        result[row, col] = last_valid_result
+                            last_valid_result = max(0.0, var)
+                            result[row, col] = last_valid_result
         else:
             ewm = 0.0
             ewm_sq = 0.0
             is_first = True
             nobs = 0
+            has_inf = False
 
             for row in range(n_rows):
                 val = arr[row, col]
@@ -414,11 +438,16 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
                         ewm_sq = (1.0 - alpha) * ewm_sq
 
                     if nobs >= max(2, min_periods):
-                        var = ewm_sq - ewm * ewm
-                        if not bias and nobs > 1:
-                            var *= nobs / (nobs - 1.0)
-                        result[row, col] = max(0.0, var)
+                        if has_inf:
+                            result[row, col] = np.nan
+                        else:
+                            var = ewm_sq - ewm * ewm
+                            if not bias and nobs > 1:
+                                var *= nobs / (nobs - 1.0)
+                            result[row, col] = max(0.0, var)
                 else:
+                    if np.isinf(val):
+                        has_inf = True
                     if is_first:
                         ewm = val
                         ewm_sq = val * val
@@ -430,12 +459,15 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
                     nobs += 1
                     # Variance requires at least 2 observations
                     if nobs >= max(2, min_periods):
-                        var = ewm_sq - ewm * ewm
+                        if has_inf:
+                            result[row, col] = np.nan
+                        else:
+                            var = ewm_sq - ewm * ewm
 
-                        if not bias and nobs > 1:
-                            var *= nobs / (nobs - 1.0)
+                            if not bias and nobs > 1:
+                                var *= nobs / (nobs - 1.0)
 
-                        result[row, col] = max(0.0, var)
+                            result[row, col] = max(0.0, var)
 
     return result
 
@@ -519,6 +551,7 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
             weight_sum = 0.0
             weight_sum_sq = 0.0
             nobs = 0
+            has_inf = False
             last_valid_result = np.nan
             for row in range(n_rows):
                 val = arr[row, c]
@@ -533,6 +566,8 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                         weight_sum_sq = weight_sum_sq * (1.0 - alpha) ** 2
                         result[row, c] = last_valid_result
                 else:
+                    if np.isinf(val):
+                        has_inf = True
                     # Decay all previous weights before adding new observation
                     weighted_sum = weighted_sum * (1.0 - alpha) + val
                     weighted_sum_sq = weighted_sum_sq * (1.0 - alpha) + val * val
@@ -541,13 +576,17 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                     nobs += 1
                     # Variance requires at least 2 observations
                     if nobs >= max(2, min_periods):
-                        mean = weighted_sum / weight_sum
-                        mean_sq = weighted_sum_sq / weight_sum
-                        var = mean_sq - mean * mean
-                        if not bias and nobs > 1:
-                            var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
-                        last_valid_result = max(0.0, var)
-                        result[row, c] = last_valid_result
+                        if has_inf:
+                            last_valid_result = np.nan
+                            result[row, c] = np.nan
+                        else:
+                            mean = weighted_sum / weight_sum
+                            mean_sq = weighted_sum_sq / weight_sum
+                            var = mean_sq - mean * mean
+                            if not bias and nobs > 1:
+                                var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
+                            last_valid_result = max(0.0, var)
+                            result[row, c] = last_valid_result
                     else:
                         result[row, c] = np.nan
         else:
@@ -555,6 +594,7 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
             ewm_sq = 0.0
             is_first = True
             nobs = 0
+            has_inf = False
             for row in range(n_rows):
                 val = arr[row, c]
                 if np.isnan(val):
@@ -563,13 +603,18 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                         ewm_sq = (1.0 - alpha) * ewm_sq
 
                     if nobs >= max(2, min_periods):
-                        var = ewm_sq - ewm * ewm
-                        if not bias and nobs > 1:
-                            var *= nobs / (nobs - 1.0)
-                        result[row, c] = max(0.0, var)
+                        if has_inf:
+                            result[row, c] = np.nan
+                        else:
+                            var = ewm_sq - ewm * ewm
+                            if not bias and nobs > 1:
+                                var *= nobs / (nobs - 1.0)
+                            result[row, c] = max(0.0, var)
                     else:
                         result[row, c] = np.nan
                 else:
+                    if np.isinf(val):
+                        has_inf = True
                     if is_first:
                         ewm = val
                         ewm_sq = val * val
@@ -580,10 +625,13 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                     nobs += 1
                     # Variance requires at least 2 observations
                     if nobs >= max(2, min_periods):
-                        var = ewm_sq - ewm * ewm
-                        if not bias and nobs > 1:
-                            var *= nobs / (nobs - 1.0)
-                        result[row, c] = max(0.0, var)
+                        if has_inf:
+                            result[row, c] = np.nan
+                        else:
+                            var = ewm_sq - ewm * ewm
+                            if not bias and nobs > 1:
+                                var *= nobs / (nobs - 1.0)
+                            result[row, c] = max(0.0, var)
                     else:
                         result[row, c] = np.nan
 
@@ -698,6 +746,10 @@ def _make_ewm_mean_wrapper():
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
 
+        # Edge case: empty DataFrame - return empty DataFrame
+        if obj.empty:
+            return obj.copy()
+
         # Handle mixed-dtype DataFrames
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 
@@ -737,6 +789,10 @@ def _make_ewm_var_wrapper():
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
 
+        # Edge case: empty DataFrame - return empty DataFrame
+        if obj.empty:
+            return obj.copy()
+
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 
         if len(numeric_cols) == 0:
@@ -774,6 +830,10 @@ def _make_ewm_std_wrapper():
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
+
+        # Edge case: empty DataFrame - return empty DataFrame
+        if obj.empty:
+            return obj.copy()
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 

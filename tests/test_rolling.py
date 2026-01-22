@@ -163,6 +163,66 @@ class TestRollingMinMax:
         pd.testing.assert_frame_equal(result, expected)
 
 
+class TestRollingSem:
+    """Tests for rolling().sem()"""
+
+    def test_basic_rolling_sem(self):
+        """Test basic rolling sem matches pandas."""
+        import unlockedpd
+
+        df = pd.DataFrame({'a': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]})
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(3).sem()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(3).sem()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
+
+    def test_rolling_sem_with_nan(self):
+        """Test rolling sem handles NaN correctly."""
+        import unlockedpd
+
+        df = pd.DataFrame({'a': [1.0, np.nan, 3.0, 4.0, 5.0]})
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(3).sem()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(3).sem()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
+
+    def test_rolling_sem_min_periods(self):
+        """Test rolling sem with min_periods."""
+        import unlockedpd
+
+        df = pd.DataFrame({'a': [1.0, 2.0, 3.0, 4.0, 5.0]})
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(3, min_periods=2).sem()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(3, min_periods=2).sem()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
+
+    def test_rolling_sem_ddof(self):
+        """Test rolling sem with different ddof."""
+        import unlockedpd
+
+        df = pd.DataFrame(np.random.randn(100, 10))
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(5).sem(ddof=0)
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(5).sem(ddof=0)
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
+
+
 class TestMixedDtypes:
     """Tests for mixed-dtype DataFrames."""
 

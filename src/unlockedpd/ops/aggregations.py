@@ -1043,6 +1043,241 @@ def _prod_dispatch(arr, skipna, axis):
 
 
 # ============================================================================
+# QUANTILE OPERATION
+# ============================================================================
+
+@njit(cache=True)
+def _quantile_column(arr: np.ndarray, q: float) -> float:
+    """Calculate quantile for a single column, handling NaN."""
+    # Filter out NaN values
+    n = len(arr)
+    valid_count = 0
+    for i in range(n):
+        if not np.isnan(arr[i]):
+            valid_count += 1
+
+    if valid_count == 0:
+        return np.nan
+
+    # Copy valid values
+    valid = np.empty(valid_count, dtype=np.float64)
+    idx = 0
+    for i in range(n):
+        if not np.isnan(arr[i]):
+            valid[idx] = arr[i]
+            idx += 1
+
+    # Sort
+    valid.sort()
+
+    # Calculate quantile using linear interpolation
+    # Position in sorted array
+    pos = q * (valid_count - 1)
+    lower_idx = int(pos)
+    upper_idx = lower_idx + 1
+
+    if upper_idx >= valid_count:
+        return valid[valid_count - 1]
+
+    # Linear interpolation
+    frac = pos - lower_idx
+    return valid[lower_idx] * (1 - frac) + valid[upper_idx] * frac
+
+
+@njit(parallel=True, cache=True)
+def _quantile_parallel(arr: np.ndarray, q: float) -> np.ndarray:
+    """Calculate quantile for each column - parallelized."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.float64)
+    for col in prange(n_cols):
+        col_data = arr[:, col].copy()
+        result[col] = _quantile_column(col_data, q)
+    return result
+
+
+@njit(cache=True)
+def _quantile_serial(arr: np.ndarray, q: float) -> np.ndarray:
+    """Calculate quantile for each column - serial version."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.float64)
+    for col in range(n_cols):
+        col_data = arr[:, col].copy()
+        result[col] = _quantile_column(col_data, q)
+    return result
+
+
+@njit(nogil=True, cache=True)
+def _quantile_nogil_chunk(arr, result, start_col, end_col, q):
+    """Quantile reduction - GIL released."""
+    n_rows = arr.shape[0]
+    for c in range(start_col, end_col):
+        col_data = arr[:, c].copy()
+        result[c] = _quantile_column(col_data, q)
+
+
+def _quantile_threadpool(arr, q):
+    """ThreadPool quantile using nogil kernels."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.float64)
+    result[:] = np.nan
+
+    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+
+    def process_chunk(args):
+        start_col, end_col = args
+        _quantile_nogil_chunk(arr, result, start_col, end_col, q)
+
+    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
+              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
+
+    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
+
+
+def _quantile_dispatch(arr, q, axis):
+    """Dispatch quantile to appropriate implementation based on size."""
+    if axis == 1:
+        arr = arr.T
+
+    n_elements = arr.size
+    if n_elements >= THREADPOOL_THRESHOLD:
+        result = _quantile_threadpool(arr, q)
+    elif n_elements >= PARALLEL_THRESHOLD:
+        result = _quantile_parallel(arr, q)
+    else:
+        result = _quantile_serial(arr, q)
+
+    return result
+
+
+# ============================================================================
+# ALL OPERATION
+# ============================================================================
+
+@njit(cache=True)
+def _all_serial(arr, skipna):
+    """Serial all reduction along axis=0."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.bool_)
+
+    for c in range(n_cols):
+        all_true = True
+        for row in range(n_rows):
+            val = arr[row, c]
+            if np.isnan(val):
+                if not skipna:
+                    all_true = False
+                    break
+                # If skipna=True, skip NaN values
+            elif val == 0.0:
+                all_true = False
+                break
+        result[c] = all_true
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _all_parallel(arr, skipna):
+    """Parallel all reduction along axis=0 using prange."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.bool_)
+
+    for c in prange(n_cols):
+        all_true = True
+        for row in range(n_rows):
+            val = arr[row, c]
+            if np.isnan(val):
+                if not skipna:
+                    all_true = False
+                    break
+            elif val == 0.0:
+                all_true = False
+                break
+        result[c] = all_true
+
+    return result
+
+
+def _all_dispatch(arr, skipna, axis):
+    """Dispatch all to appropriate implementation based on size."""
+    if axis == 1:
+        arr = arr.T
+
+    n_elements = arr.size
+    if n_elements >= PARALLEL_THRESHOLD:
+        result = _all_parallel(arr, skipna)
+    else:
+        result = _all_serial(arr, skipna)
+
+    return result
+
+
+# ============================================================================
+# ANY OPERATION
+# ============================================================================
+
+@njit(cache=True)
+def _any_serial(arr, skipna):
+    """Serial any reduction along axis=0."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.bool_)
+
+    for c in range(n_cols):
+        any_true = False
+        for row in range(n_rows):
+            val = arr[row, c]
+            if np.isnan(val):
+                if not skipna:
+                    any_true = True  # pandas: NaN is truthy with skipna=False
+                    break
+            elif val != 0.0:
+                any_true = True
+                break
+        result[c] = any_true
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _any_parallel(arr, skipna):
+    """Parallel any reduction along axis=0 using prange."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_cols, dtype=np.bool_)
+
+    for c in prange(n_cols):
+        any_true = False
+        for row in range(n_rows):
+            val = arr[row, c]
+            if np.isnan(val):
+                if not skipna:
+                    any_true = True
+                    break
+            elif val != 0.0:
+                any_true = True
+                break
+        result[c] = any_true
+
+    return result
+
+
+def _any_dispatch(arr, skipna, axis):
+    """Dispatch any to appropriate implementation based on size."""
+    if axis == 1:
+        arr = arr.T
+
+    n_elements = arr.size
+    if n_elements >= PARALLEL_THRESHOLD:
+        result = _any_parallel(arr, skipna)
+    else:
+        result = _any_serial(arr, skipna)
+
+    return result
+
+
+# ============================================================================
 # PANDAS WRAPPER FUNCTIONS
 # ============================================================================
 
@@ -1057,9 +1292,20 @@ def optimized_sum(self, axis=0, skipna=True, numeric_only=False, min_count=0, **
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return 0.0 for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(0.0, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _sum_dispatch(arr, skipna, axis)
@@ -1080,9 +1326,20 @@ def optimized_mean(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return nan for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(np.nan, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _mean_dispatch(arr, skipna, axis)
@@ -1103,9 +1360,20 @@ def optimized_std(self, axis=0, skipna=True, ddof=1, numeric_only=False, **kwarg
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return nan for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(np.nan, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _std_dispatch(arr, skipna, axis, ddof)
@@ -1126,9 +1394,20 @@ def optimized_var(self, axis=0, skipna=True, ddof=1, numeric_only=False, **kwarg
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return nan for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(np.nan, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _var_dispatch(arr, skipna, axis, ddof)
@@ -1149,9 +1428,20 @@ def optimized_min(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return nan for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(np.nan, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _min_dispatch(arr, skipna, axis)
@@ -1172,9 +1462,20 @@ def optimized_max(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return nan for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(np.nan, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _max_dispatch(arr, skipna, axis)
@@ -1195,9 +1496,20 @@ def optimized_median(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     elif axis == 'columns':
         axis = 1
 
+    # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=np.float64)
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
+
+    # Handle 0 rows with columns - return nan for each column (pandas behavior)
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(np.nan, index=numeric_cols, dtype=np.float64)
+        else:
+            return pd.Series([], dtype=np.float64)
 
     arr = ensure_float64(numeric_df.values)
     result = _median_dispatch(arr, skipna, axis)
@@ -1231,6 +1543,178 @@ def optimized_prod(self, axis=0, skipna=True, numeric_only=False, min_count=0, *
         return pd.Series(result, index=self.index)
 
 
+def optimized_quantile(self, q=0.5, axis=0, numeric_only=True, interpolation='linear', method='single'):
+    """Optimized quantile computation.
+
+    Parameters
+    ----------
+    self : DataFrame
+        Input DataFrame
+    q : float or array-like, default 0.5
+        Quantile(s) to compute (0 <= q <= 1)
+    axis : int, default 0
+        0 for column-wise, 1 for row-wise
+    numeric_only : bool, default True
+        Include only numeric columns
+    interpolation : str, default 'linear'
+        Interpolation method (only 'linear' optimized)
+    method : str, default 'single'
+        Method for pandas compatibility (ignored in optimized version)
+
+    Returns
+    -------
+    Series or DataFrame
+        Quantile values
+    """
+    if not isinstance(self, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    if interpolation != 'linear':
+        raise TypeError(f"Only 'linear' interpolation optimized, got '{interpolation}'")
+
+    # Normalize axis
+    if axis is None or axis == 'index':
+        axis = 0
+    elif axis == 'columns':
+        axis = 1
+
+    # Handle empty DataFrame
+    if self.empty and self.shape[1] == 0:
+        if isinstance(q, (list, np.ndarray)):
+            return pd.DataFrame()
+        # Use Index with dtype='object' to match pandas behavior
+        return pd.Series([], dtype=np.float64, index=pd.Index([], dtype='object'), name=q)
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(self)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns")
+
+    arr = ensure_float64(numeric_df.values)
+
+    # Handle single quantile vs multiple quantiles
+    if isinstance(q, (list, np.ndarray)):
+        # Multiple quantiles - return DataFrame
+        q_arr = np.asarray(q, dtype=np.float64)
+        results = []
+        for q_val in q_arr:
+            result_arr = _quantile_dispatch(arr, q_val, axis)
+            if axis == 0:
+                results.append(pd.Series(result_arr, index=numeric_cols, name=q_val))
+            else:
+                results.append(pd.Series(result_arr, index=self.index, name=q_val))
+        return pd.DataFrame(results)
+    else:
+        # Single quantile - return Series
+        q_val = float(q)
+        result_arr = _quantile_dispatch(arr, q_val, axis)
+        if axis == 0:
+            return pd.Series(result_arr, index=numeric_cols, name=q_val)
+        else:
+            return pd.Series(result_arr, index=self.index, name=q_val)
+
+
+def optimized_all(self, axis=0, bool_only=None, skipna=True, **kwargs):
+    """Optimized boolean all operation.
+    
+    Parameters
+    ----------
+    self : DataFrame
+        Input DataFrame
+    axis : int, default 0
+        0 for column-wise, 1 for row-wise
+    bool_only : ignored
+    skipna : bool, default True
+        Exclude NaN values
+        
+    Returns
+    -------
+    Series
+        Boolean results
+    """
+    if not isinstance(self, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+    
+    # Normalize axis
+    if axis is None or axis == 'index':
+        axis = 0
+    elif axis == 'columns':
+        axis = 1
+    
+    # Handle empty DataFrame
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=bool)
+    
+    numeric_cols, numeric_df = get_numeric_columns_fast(self)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns")
+    
+    # Handle 0 rows with columns
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(True, index=numeric_cols, dtype=bool)
+        else:
+            return pd.Series([], dtype=bool)
+    
+    arr = ensure_float64(numeric_df.values)
+    result = _all_dispatch(arr, skipna, axis)
+    
+    if axis == 0:
+        return pd.Series(result, index=numeric_cols)
+    else:
+        return pd.Series(result, index=self.index)
+
+
+def optimized_any(self, axis=0, bool_only=None, skipna=True, **kwargs):
+    """Optimized boolean any operation.
+    
+    Parameters
+    ----------
+    self : DataFrame
+        Input DataFrame
+    axis : int, default 0
+        0 for column-wise, 1 for row-wise
+    bool_only : ignored
+    skipna : bool, default True
+        Exclude NaN values
+        
+    Returns
+    -------
+    Series
+        Boolean results
+    """
+    if not isinstance(self, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+    
+    # Normalize axis
+    if axis is None or axis == 'index':
+        axis = 0
+    elif axis == 'columns':
+        axis = 1
+    
+    # Handle empty DataFrame
+    if self.empty and self.shape[1] == 0:
+        return pd.Series([], dtype=bool)
+    
+    numeric_cols, numeric_df = get_numeric_columns_fast(self)
+    if len(numeric_cols) == 0:
+        raise TypeError("No numeric columns")
+    
+    # Handle 0 rows with columns
+    if numeric_df.shape[0] == 0:
+        if axis == 0:
+            return pd.Series(False, index=numeric_cols, dtype=bool)
+        else:
+            return pd.Series([], dtype=bool)
+    
+    arr = ensure_float64(numeric_df.values)
+    result = _any_dispatch(arr, skipna, axis)
+    
+    if axis == 0:
+        return pd.Series(result, index=numeric_cols)
+    else:
+        return pd.Series(result, index=self.index)
+
+
 # ============================================================================
 # PATCH REGISTRATION
 # ============================================================================
@@ -1239,7 +1723,7 @@ def apply_aggregation_patches():
     """Apply aggregation operation patches to pandas DataFrame.
 
     These patches provide optimized implementations of reduction operations
-    (sum, mean, std, var, min, max, median, prod) using Numba-accelerated
+    (sum, mean, std, var, min, max, median, prod, quantile, all, any) using Numba-accelerated
     kernels with 3-tier dispatch (serial, parallel, threadpool).
     """
     from .._patch import patch
@@ -1252,3 +1736,6 @@ def apply_aggregation_patches():
     patch(pd.DataFrame, 'max', optimized_max)
     patch(pd.DataFrame, 'median', optimized_median)
     patch(pd.DataFrame, 'prod', optimized_prod)
+    patch(pd.DataFrame, 'quantile', optimized_quantile)
+    patch(pd.DataFrame, 'all', optimized_all)
+    patch(pd.DataFrame, 'any', optimized_any)

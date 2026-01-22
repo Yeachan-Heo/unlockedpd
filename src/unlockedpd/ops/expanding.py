@@ -45,7 +45,8 @@ def _expanding_sum_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
         count = 0
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 cumsum += val
                 count += 1
 
@@ -67,7 +68,8 @@ def _expanding_mean_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
         count = 0
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 cumsum += val
                 count += 1
 
@@ -96,8 +98,8 @@ def _expanding_std_2d(arr: np.ndarray, min_periods: int, ddof: int = 1) -> np.nd
         for row in range(n_rows):
             val = arr[row, col]
 
-            # Add new value using Welford's update
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 count += 1
                 delta = val - mean
                 mean += delta / count
@@ -126,7 +128,8 @@ def _expanding_var_2d(arr: np.ndarray, min_periods: int, ddof: int = 1) -> np.nd
         for row in range(n_rows):
             val = arr[row, col]
 
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 count += 1
                 delta = val - mean
                 mean += delta / count
@@ -152,7 +155,8 @@ def _expanding_min_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 if val < min_val:
                     min_val = val
                 count += 1
@@ -176,7 +180,8 @@ def _expanding_max_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 if val > max_val:
                     max_val = val
                 count += 1
@@ -333,7 +338,8 @@ def _expanding_sum_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
         count = 0
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 cumsum += val
                 count += 1
 
@@ -355,7 +361,8 @@ def _expanding_mean_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
         count = 0
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 cumsum += val
                 count += 1
 
@@ -380,7 +387,8 @@ def _expanding_std_2d_serial(arr: np.ndarray, min_periods: int, ddof: int = 1) -
         for row in range(n_rows):
             val = arr[row, col]
 
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 count += 1
                 delta = val - mean
                 mean += delta / count
@@ -408,7 +416,8 @@ def _expanding_var_2d_serial(arr: np.ndarray, min_periods: int, ddof: int = 1) -
         for row in range(n_rows):
             val = arr[row, col]
 
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 count += 1
                 delta = val - mean
                 mean += delta / count
@@ -434,7 +443,8 @@ def _expanding_min_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 if val < min_val:
                     min_val = val
                 count += 1
@@ -458,7 +468,8 @@ def _expanding_max_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
         for row in range(n_rows):
             val = arr[row, col]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 if val > max_val:
                     max_val = val
                 count += 1
@@ -595,7 +606,8 @@ def _expanding_mean_nogil_chunk(arr, result, start_col, end_col, min_periods):
         count = 0
         for row in range(n_rows):
             val = arr[row, c]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 cumsum += val
                 count += 1
             if count >= min_periods:
@@ -613,7 +625,8 @@ def _expanding_sum_nogil_chunk(arr, result, start_col, end_col, min_periods):
         count = 0
         for row in range(n_rows):
             val = arr[row, c]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 cumsum += val
                 count += 1
             if count >= min_periods:
@@ -632,7 +645,8 @@ def _expanding_std_nogil_chunk(arr, result, start_col, end_col, min_periods, ddo
         M2 = 0.0
         for row in range(n_rows):
             val = arr[row, c]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 count += 1
                 delta = val - mean
                 mean += delta / count
@@ -654,7 +668,8 @@ def _expanding_var_nogil_chunk(arr, result, start_col, end_col, min_periods, ddo
         M2 = 0.0
         for row in range(n_rows):
             val = arr[row, c]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 count += 1
                 delta = val - mean
                 mean += delta / count
@@ -675,7 +690,8 @@ def _expanding_min_nogil_chunk(arr, result, start_col, end_col, min_periods):
         count = 0
         for row in range(n_rows):
             val = arr[row, c]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 if val < min_val:
                     min_val = val
                 count += 1
@@ -694,7 +710,8 @@ def _expanding_max_nogil_chunk(arr, result, start_col, end_col, min_periods):
         count = 0
         for row in range(n_rows):
             val = arr[row, c]
-            if not np.isnan(val):
+            # Skip NaN and inf values (pandas treats inf as invalid for expanding)
+            if not np.isnan(val) and not np.isinf(val):
                 if val > max_val:
                     max_val = val
                 count += 1
@@ -965,6 +982,10 @@ def _make_expanding_wrapper(dispatch_func):
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
 
+        # Edge case: empty DataFrame - return empty DataFrame
+        if obj.empty:
+            return obj.copy()
+
         # Handle mixed-dtype DataFrames
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 
@@ -993,6 +1014,10 @@ def _make_expanding_std_wrapper():
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
 
+        # Edge case: empty DataFrame - return empty DataFrame
+        if obj.empty:
+            return obj.copy()
+
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 
         if len(numeric_cols) == 0:
@@ -1019,6 +1044,10 @@ def _make_expanding_var_wrapper():
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
+
+        # Edge case: empty DataFrame - return empty DataFrame
+        if obj.empty:
+            return obj.copy()
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 

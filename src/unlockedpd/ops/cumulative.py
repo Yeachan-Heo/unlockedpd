@@ -32,32 +32,60 @@ THREADPOOL_WORKERS = min(_CPU_COUNT, 32)
 
 @njit(nogil=True, cache=True)
 def _cumsum_nogil_chunk(arr, result, start_col, end_col):
-    """Cumulative sum - GIL released."""
+    """Cumulative sum - GIL released.
+
+    Handles inf correctly:
+    - inf + finite = inf
+    - inf + inf = inf
+    - inf + (-inf) = nan
+    - Once nan appears, all subsequent values are nan
+    """
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
         cumsum = 0.0
+        has_nan = False
         for row in range(n_rows):
             val = arr[row, c]
-            if np.isnan(val):
+            if has_nan or np.isnan(val):
                 result[row, c] = np.nan
+                has_nan = True
             else:
                 cumsum += val
-                result[row, c] = cumsum
+                # Check if cumsum became nan (e.g., inf + (-inf))
+                if np.isnan(cumsum):
+                    result[row, c] = np.nan
+                    has_nan = True
+                else:
+                    result[row, c] = cumsum
 
 
 @njit(nogil=True, cache=True)
 def _cumprod_nogil_chunk(arr, result, start_col, end_col):
-    """Cumulative product - GIL released."""
+    """Cumulative product - GIL released.
+
+    Handles inf correctly:
+    - inf * finite (non-zero) = inf (with appropriate sign)
+    - inf * 0 = nan
+    - inf * inf = inf
+    - Once nan appears, all subsequent values are nan
+    """
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
         cumprod = 1.0
+        has_nan = False
         for row in range(n_rows):
             val = arr[row, c]
-            if np.isnan(val):
+            if has_nan or np.isnan(val):
                 result[row, c] = np.nan
+                has_nan = True
             else:
                 cumprod *= val
-                result[row, c] = cumprod
+                # Check if cumprod became nan (e.g., inf * 0)
+                if np.isnan(cumprod):
+                    result[row, c] = np.nan
+                    has_nan = True
+                else:
+                    result[row, c] = cumprod
 
 
 @njit(nogil=True, cache=True)
@@ -207,6 +235,10 @@ def optimized_cumsum(df, axis=0, skipna=True, *args, **kwargs):
     if axis not in (0, 'index', None):
         raise ValueError("Only axis=0 is supported")
 
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns to process")
@@ -233,6 +265,10 @@ def optimized_cumprod(df, axis=0, skipna=True, *args, **kwargs):
     if axis not in (0, 'index', None):
         raise ValueError("Only axis=0 is supported")
 
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns to process")
@@ -258,6 +294,10 @@ def optimized_cummin(df, axis=0, skipna=True, *args, **kwargs):
     if axis not in (0, 'index', None):
         raise ValueError("Only axis=0 is supported")
 
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns to process")
@@ -282,6 +322,10 @@ def optimized_cummax(df, axis=0, skipna=True, *args, **kwargs):
 
     if axis not in (0, 'index', None):
         raise ValueError("Only axis=0 is supported")
+
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
 
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:

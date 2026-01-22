@@ -20,6 +20,7 @@ Performance:
 """
 import numpy as np
 import pandas as pd
+from numba import njit, prange
 
 from .._compat import get_numeric_columns_fast, wrap_result
 
@@ -41,6 +42,96 @@ SUPPORTED_TRANSFORMS = {
     'cumsum': np.cumsum,
     'cumprod': np.cumprod,
 }
+
+
+@njit(parallel=True, cache=True)
+def _isna_parallel(arr: np.ndarray) -> np.ndarray:
+    """Detect NaN values - parallelized."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.bool_)
+    for col in prange(n_cols):
+        for row in range(n_rows):
+            result[row, col] = np.isnan(arr[row, col])
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _notna_parallel(arr: np.ndarray) -> np.ndarray:
+    """Detect non-NaN values - parallelized."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.bool_)
+    for col in prange(n_cols):
+        for row in range(n_rows):
+            result[row, col] = not np.isnan(arr[row, col])
+    return result
+
+
+def optimized_isna(df: pd.DataFrame) -> pd.DataFrame:
+    """Optimized isna detection.
+
+    Returns
+    -------
+    DataFrame
+        Boolean DataFrame indicating NaN positions
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    # Handle empty DataFrame
+    if df.empty:
+        return df.isna()  # Let pandas handle empty case
+
+    numeric_df = df.select_dtypes(include=[np.number])
+    if numeric_df.empty:
+        raise TypeError("No numeric columns")
+
+    arr = numeric_df.values.astype(np.float64)
+    result_arr = _isna_parallel(arr)
+
+    # Build result DataFrame
+    result = pd.DataFrame(result_arr, index=df.index, columns=numeric_df.columns)
+
+    # Add non-numeric columns using pandas
+    for col in df.columns:
+        if col not in numeric_df.columns:
+            result[col] = df[col].isna()
+
+    # Reorder columns to match original
+    return result[df.columns]
+
+
+def optimized_notna(df: pd.DataFrame) -> pd.DataFrame:
+    """Optimized notna detection.
+
+    Returns
+    -------
+    DataFrame
+        Boolean DataFrame indicating non-NaN positions
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("Optimization only for DataFrame")
+
+    # Handle empty DataFrame
+    if df.empty:
+        return df.notna()  # Let pandas handle empty case
+
+    numeric_df = df.select_dtypes(include=[np.number])
+    if numeric_df.empty:
+        raise TypeError("No numeric columns")
+
+    arr = numeric_df.values.astype(np.float64)
+    result_arr = _notna_parallel(arr)
+
+    # Build result DataFrame
+    result = pd.DataFrame(result_arr, index=df.index, columns=numeric_df.columns)
+
+    # Add non-numeric columns using pandas
+    for col in df.columns:
+        if col not in numeric_df.columns:
+            result[col] = df[col].notna()
+
+    # Reorder columns to match original
+    return result[df.columns]
 
 
 def optimized_transform(self, func, axis=0, *args, **kwargs):
@@ -95,4 +186,33 @@ def optimized_transform(self, func, axis=0, *args, **kwargs):
 def apply_dataframe_transform_patches():
     """Apply DataFrame.transform() patches to pandas."""
     from .._patch import patch
+
+    # Store original methods
+    _original_isna = pd.DataFrame.isna
+    _original_notna = pd.DataFrame.notna
+    _original_isnull = pd.DataFrame.isnull
+    _original_notnull = pd.DataFrame.notnull
+
+    # Create patched methods with fallback
+    def _patched_isna(self):
+        try:
+            return optimized_isna(self)
+        except TypeError:
+            return _original_isna(self)
+
+    def _patched_notna(self):
+        try:
+            return optimized_notna(self)
+        except TypeError:
+            return _original_notna(self)
+
+    # isnull and notnull are aliases
+    _patched_isnull = _patched_isna
+    _patched_notnull = _patched_notna
+
+    # Apply patches
     patch(pd.DataFrame, 'transform', optimized_transform)
+    patch(pd.DataFrame, 'isna', _patched_isna)
+    patch(pd.DataFrame, 'notna', _patched_notna)
+    patch(pd.DataFrame, 'isnull', _patched_isnull)
+    patch(pd.DataFrame, 'notnull', _patched_notnull)

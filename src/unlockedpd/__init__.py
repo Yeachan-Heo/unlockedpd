@@ -25,7 +25,7 @@ Configuration:
     # UNLOCKEDPD_PARALLEL_THRESHOLD=10000
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # Import configuration
 from ._config import config
@@ -100,6 +100,14 @@ def _apply_all_patches():
     # DataFrame.agg() / aggregate() dispatching to optimized aggregations
     from .ops.agg import apply_agg_patches
     apply_agg_patches()
+
+    # DataFrame.corr() / cov() - correlation and covariance matrices
+    from .ops.dataframe_pairwise import apply_dataframe_pairwise_patches
+    apply_dataframe_pairwise_patches()
+
+    # fillna and dropna operations
+    from .ops.fillna import apply_fillna_patches
+    apply_fillna_patches()
 
 
 def _warmup_all():

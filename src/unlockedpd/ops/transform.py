@@ -73,6 +73,12 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                 new_val = arr[row, col]
                 if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif np.isinf(old_val):
+                    # pandas special handling for inf values
+                    if np.isinf(new_val):
+                        result[row, col] = np.nan  # inf/inf or -inf/-inf
+                    else:
+                        result[row, col] = -1.0  # inf -> finite
                 elif old_val == 0.0:
                     if new_val == 0.0:
                         result[row, col] = np.nan  # 0/0 undefined
@@ -91,6 +97,12 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                 new_val = arr[row, col]
                 if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif np.isinf(old_val):
+                    # pandas special handling for inf values
+                    if np.isinf(new_val):
+                        result[row, col] = np.nan  # inf/inf or -inf/-inf
+                    else:
+                        result[row, col] = -1.0  # inf -> finite
                 elif old_val == 0.0:
                     if new_val == 0.0:
                         result[row, col] = np.nan  # 0/0 undefined
@@ -170,6 +182,12 @@ def _pct_change_col_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                 new_val = arr[row, col]
                 if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif np.isinf(old_val):
+                    # pandas special handling for inf values
+                    if np.isinf(new_val):
+                        result[row, col] = np.nan  # inf/inf or -inf/-inf
+                    else:
+                        result[row, col] = -1.0  # inf -> finite
                 elif old_val == 0.0:
                     if new_val == 0.0:
                         result[row, col] = np.nan  # 0/0 undefined
@@ -186,6 +204,12 @@ def _pct_change_col_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                 new_val = arr[row, col]
                 if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif np.isinf(old_val):
+                    # pandas special handling for inf values
+                    if np.isinf(new_val):
+                        result[row, col] = np.nan  # inf/inf or -inf/-inf
+                    else:
+                        result[row, col] = -1.0  # inf -> finite
                 elif old_val == 0.0:
                     if new_val == 0.0:
                         result[row, col] = np.nan  # 0/0 undefined
@@ -264,6 +288,12 @@ def _pct_change_serial(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                 new_val = arr[row, col]
                 if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif np.isinf(old_val):
+                    # pandas special handling for inf values
+                    if np.isinf(new_val):
+                        result[row, col] = np.nan  # inf/inf or -inf/-inf
+                    else:
+                        result[row, col] = -1.0  # inf -> finite
                 elif old_val == 0.0:
                     if new_val == 0.0:
                         result[row, col] = np.nan  # 0/0 undefined
@@ -282,6 +312,12 @@ def _pct_change_serial(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                 new_val = arr[row, col]
                 if np.isnan(old_val) or np.isnan(new_val):
                     result[row, col] = np.nan
+                elif np.isinf(old_val):
+                    # pandas special handling for inf values
+                    if np.isinf(new_val):
+                        result[row, col] = np.nan  # inf/inf or -inf/-inf
+                    else:
+                        result[row, col] = -1.0  # inf -> finite
                 elif old_val == 0.0:
                     if new_val == 0.0:
                         result[row, col] = np.nan  # 0/0 undefined
@@ -394,6 +430,10 @@ def optimized_diff(df, periods=1, axis=0):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     # Fast path: all-numeric DataFrame (common case)
     if is_all_numeric(df):
         arr = ensure_float64(df.values)
@@ -445,6 +485,10 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
+
     # Handle fill_method - match pandas behavior
     # pandas default is 'pad' (forward fill) before computing pct_change
     if fill_method in ('pad', 'ffill'):
@@ -489,6 +533,10 @@ def optimized_shift(df, periods=1, freq=None, axis=0, fill_value=None):
 
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
+
+    # Handle empty DataFrame
+    if df.empty:
+        raise TypeError("Use pandas for empty DataFrames")
 
     fv = float(fill_value) if fill_value is not None else np.nan
 
