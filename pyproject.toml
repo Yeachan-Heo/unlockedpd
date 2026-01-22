@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "unlockedpd"
-version = "0.3.1"
+version = "0.3.2"
 description = "Transparent pandas performance optimization via Numba-accelerated parallel operations"
 readme = "README.md"
 license = "MIT"
