@@ -4,12 +4,14 @@ This module provides Numba-accelerated ranking operations
 that parallelize across rows (axis=1) or columns (axis=0).
 """
 
+import os
+
 import numpy as np
 from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
 
 from .._compat import (
-    get_numeric_columns,
+    get_numeric_columns_fast,
     wrap_result,
     wrap_result_fast,
     ensure_float64,
@@ -28,6 +30,17 @@ PARALLEL_THRESHOLD = 500_000
 RANK_THREAD_CAP = 32
 RANK_NATIVE_BYTES_PER_THREAD = 512 * 1024
 RANK_NATIVE_THREAD_CAP = 32
+
+
+def _native_rank_explicitly_enabled() -> bool:
+    """Return whether the optional native rank experiment is explicitly on."""
+
+    return os.environ.get("UNLOCKEDPD_ENABLE_NATIVE_RANK", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _bounded_numba_rank(kernel, arr, *args):
@@ -780,7 +793,11 @@ def optimized_rank(
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    numeric_cols, numeric_df = get_numeric_columns(df)
+    # The common large-frame path is all-numeric.  ``select_dtypes`` is
+    # surprisingly expensive on wide frames and dominated the actual rank
+    # kernel in the resource profiler, so use the manager-block fast path first
+    # and fall back to pandas dtype filtering only for mixed frames.
+    numeric_cols, numeric_df = get_numeric_columns_fast(df)
 
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns to process")
@@ -807,7 +824,10 @@ def optimized_rank(
                     and arr.shape[1] >= 128
                     and not np.isnan(arr).any()
                 ):
-                    result = _native_axis1_rank_average_no_nan(arr, ascending)
+                    if _native_rank_explicitly_enabled():
+                        result = _native_axis1_rank_average_no_nan(arr, ascending)
+                    else:
+                        result = None
                     if result is None:
                         record_dispatch_path("parallel_numba")
                         result = _bounded_numba_rank(

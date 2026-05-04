@@ -38,11 +38,12 @@ AXIS1_CUMULATIVE_SMALL_THREAD_CAP = 16
 AXIS1_CUMULATIVE_LARGE_THREAD_CAP = 32
 AXIS1_CUMULATIVE_BYTES_PER_THREAD = 2 * 1024 * 1024
 AXIS0_CUMULATIVE_THRESHOLD = 500_000
-AXIS0_CUMULATIVE_THREAD_CAP = 32
+AXIS0_CUMULATIVE_THREAD_CAP = 128
 AXIS0_CUMULATIVE_MEDIUM_FRAME_BYTES = 128 * 1024 * 1024
 AXIS0_CUMULATIVE_SMALL_THREAD_CAP = 16
+AXIS0_CUMULATIVE_ROW_BLOCK_SMALL_THREAD_CAP = 128
 AXIS0_CUMULATIVE_LARGE_THREAD_CAP = 32
-AXIS0_CUMULATIVE_BYTES_PER_THREAD = 2 * 1024 * 1024
+AXIS0_CUMULATIVE_BYTES_PER_THREAD = 512 * 1024
 
 
 def _axis1_cumulative_thread_cap(arr: np.ndarray) -> int:
@@ -68,7 +69,7 @@ def _axis1_cumulative_thread_cap(arr: np.ndarray) -> int:
     )
 
 
-def _axis0_cumulative_thread_cap(arr: np.ndarray) -> int:
+def _axis0_cumulative_thread_cap(arr: np.ndarray, op: str | None = None) -> int:
     """Return a size-aware cap for row-block axis=0 cumulative workers."""
 
     nbytes = int(getattr(arr, "nbytes", 0))
@@ -80,11 +81,14 @@ def _axis0_cumulative_thread_cap(arr: np.ndarray) -> int:
         (nbytes + AXIS0_CUMULATIVE_BYTES_PER_THREAD - 1)
         // AXIS0_CUMULATIVE_BYTES_PER_THREAD,
     )
-    operation_cap = (
-        AXIS0_CUMULATIVE_SMALL_THREAD_CAP
-        if nbytes < AXIS0_CUMULATIVE_MEDIUM_FRAME_BYTES
-        else AXIS0_CUMULATIVE_LARGE_THREAD_CAP
-    )
+    if nbytes < AXIS0_CUMULATIVE_MEDIUM_FRAME_BYTES:
+        operation_cap = (
+            AXIS0_CUMULATIVE_ROW_BLOCK_SMALL_THREAD_CAP
+            if op in {"cumsum", "cumprod", "cummin", "cummax"}
+            else AXIS0_CUMULATIVE_SMALL_THREAD_CAP
+        )
+    else:
+        operation_cap = AXIS0_CUMULATIVE_LARGE_THREAD_CAP
     return max(
         1,
         min(size_cap, operation_cap, AXIS0_CUMULATIVE_THREAD_CAP, arr.shape[0]),
@@ -129,12 +133,14 @@ def _bounded_axis1_cumulative(kernel, arr: np.ndarray) -> np.ndarray:
     return result
 
 
-def _bounded_axis0_cumulative(kernel, arr: np.ndarray) -> np.ndarray:
+def _bounded_axis0_cumulative(
+    kernel, arr: np.ndarray, op: str | None = None
+) -> np.ndarray:
     """Run dense finite row-block cumulative kernels with bounded Numba threads."""
 
     from .._config import config
 
-    thread_cap = _axis0_cumulative_thread_cap(arr)
+    thread_cap = _axis0_cumulative_thread_cap(arr, op)
     configured = config.num_threads
     target_threads = (
         min(configured, thread_cap)
@@ -153,6 +159,40 @@ def _bounded_axis0_cumulative(kernel, arr: np.ndarray) -> np.ndarray:
     if target_threads != get_num_threads():
         set_num_threads(target_threads)
     return kernel(arr, target_threads)
+
+
+@njit(parallel=True, nogil=True, cache=True)
+def _all_finite_axis0_blocks(arr: np.ndarray, blocks: int) -> bool:
+    """Return whether all values are finite without allocating a bool mask."""
+
+    n_rows, n_cols = arr.shape
+    flags = np.zeros(blocks, dtype=np.uint8)
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        bad = 0
+        for row in range(start, end):
+            for col in range(n_cols):
+                if not np.isfinite(arr[row, col]):
+                    bad = 1
+                    break
+            if bad:
+                break
+        flags[block] = bad
+
+    for block in range(blocks):
+        if flags[block]:
+            return False
+    return True
+
+
+def _axis0_all_finite(arr: np.ndarray, op: str) -> bool:
+    """Check finite dense frames with the same bounded fan-out as the kernel."""
+
+    blocks = _axis0_cumulative_thread_cap(arr, op)
+    if blocks != get_num_threads():
+        set_num_threads(blocks)
+    return bool(_all_finite_axis0_blocks(arr, blocks))
 
 
 # ============================================================================
@@ -351,7 +391,7 @@ def _normalize_axis(axis) -> int:
     raise ValueError(f"No axis named {axis!r}")
 
 
-@njit(parallel=True, nogil=True, cache=True)
+@njit(parallel=True, nogil=True, fastmath=True, cache=True)
 def _cumsum_axis0_finite_blocks(arr, blocks):
     """Dense finite cumsum(axis=0) using row-contiguous block scans."""
 
@@ -387,7 +427,7 @@ def _cumsum_axis0_finite_blocks(arr, blocks):
     return result
 
 
-@njit(parallel=True, nogil=True, cache=True)
+@njit(parallel=True, nogil=True, fastmath=True, cache=True)
 def _cumprod_axis0_finite_blocks(arr, blocks):
     """Dense finite cumprod(axis=0) using row-contiguous block scans."""
 
@@ -423,7 +463,7 @@ def _cumprod_axis0_finite_blocks(arr, blocks):
     return result
 
 
-@njit(parallel=True, nogil=True, cache=True)
+@njit(parallel=True, nogil=True, fastmath=True, cache=True)
 def _cummin_axis0_finite_blocks(arr, blocks):
     """Dense finite cummin(axis=0) using row-contiguous block scans."""
 
@@ -468,7 +508,7 @@ def _cummin_axis0_finite_blocks(arr, blocks):
     return result
 
 
-@njit(parallel=True, nogil=True, cache=True)
+@njit(parallel=True, nogil=True, fastmath=True, cache=True)
 def _cummax_axis0_finite_blocks(arr, blocks):
     """Dense finite cummax(axis=0) using row-contiguous block scans."""
 
@@ -528,7 +568,7 @@ def _axis0_numba_cumulative(arr: np.ndarray, op: str) -> np.ndarray | None:
     # The row-block kernels use associative block prefixes to exploit the
     # row-major DataFrame buffer.  Keep exact pandas/NumPy edge behavior for
     # NaN/inf inputs by leaving non-finite frames on the existing safe path.
-    if not np.isfinite(arr).all():
+    if not _axis0_all_finite(arr, op):
         return None
 
     assert_memory_budget(
@@ -542,13 +582,13 @@ def _axis0_numba_cumulative(arr: np.ndarray, op: str) -> np.ndarray | None:
     )
 
     if op == "cumsum":
-        return _bounded_axis0_cumulative(_cumsum_axis0_finite_blocks, arr)
+        return _bounded_axis0_cumulative(_cumsum_axis0_finite_blocks, arr, op)
     if op == "cumprod":
-        return _bounded_axis0_cumulative(_cumprod_axis0_finite_blocks, arr)
+        return _bounded_axis0_cumulative(_cumprod_axis0_finite_blocks, arr, op)
     if op == "cummin":
-        return _bounded_axis0_cumulative(_cummin_axis0_finite_blocks, arr)
+        return _bounded_axis0_cumulative(_cummin_axis0_finite_blocks, arr, op)
     if op == "cummax":
-        return _bounded_axis0_cumulative(_cummax_axis0_finite_blocks, arr)
+        return _bounded_axis0_cumulative(_cummax_axis0_finite_blocks, arr, op)
     return None
 
 

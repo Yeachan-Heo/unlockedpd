@@ -104,8 +104,10 @@ class TestRankAxis1:
         assert rank_ops._axis1_native_rank_thread_cap(small) == 4
         assert rank_ops._axis1_native_rank_thread_cap(large) == 8
 
-    def test_axis1_average_no_nan_can_use_native_rank_path(self, monkeypatch):
-        """Dense axis=1 average rank can dispatch to the native C++ fast path."""
+    def test_axis1_average_no_nan_can_use_native_rank_path_when_enabled(
+        self, monkeypatch
+    ):
+        """Dense axis=1 average rank can dispatch to native C++ when requested."""
         import unlockedpd
 
         arr = np.tile(np.arange(128, dtype=np.float64), (512, 1))
@@ -114,10 +116,14 @@ class TestRankAxis1:
         def fake_native_rank(values, *, ascending, threads):
             assert ascending is True
             assert threads >= 1
-            return np.tile(np.arange(1, values.shape[1] + 1, dtype=np.float64), (values.shape[0], 1))
+            ranks = np.arange(1, values.shape[1] + 1, dtype=np.float64)
+            return np.tile(ranks, (values.shape[0], 1))
 
         monkeypatch.setattr(rank_ops, "PARALLEL_THRESHOLD", 1)
-        monkeypatch.setattr(rank_ops, "native_axis1_rank_average_no_nan", fake_native_rank)
+        monkeypatch.setattr(
+            rank_ops, "native_axis1_rank_average_no_nan", fake_native_rank
+        )
+        monkeypatch.setenv("UNLOCKEDPD_ENABLE_NATIVE_RANK", "1")
 
         unlockedpd.config.enabled = True
         result = df.rank(axis=1)
