@@ -558,7 +558,7 @@ def _infer_selected_path(operation: str, shape: tuple[int, int]) -> str:
             "dataframe_cummin",
             "dataframe_cummax",
         }:
-            return "numpy_vectorized"
+            return "threadpool" if n >= 500_000 else "numpy_vectorized"
         if operation in {
             "dataframe_diff",
             "dataframe_shift",

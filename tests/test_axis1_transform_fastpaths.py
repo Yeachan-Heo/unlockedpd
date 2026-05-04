@@ -6,6 +6,7 @@ import pandas.testing as tm
 
 import unlockedpd
 from unlockedpd._resources import get_last_selected_path
+from unlockedpd.ops import cumulative as cumulative_ops
 from unlockedpd.ops import transform as transform_ops
 
 
@@ -36,6 +37,35 @@ def test_axis1_cumprod_uses_numpy_vectorized_dense_fast_path():
 
     tm.assert_frame_equal(result, expected)
     assert get_last_selected_path() == "numpy_vectorized"
+
+
+def test_axis1_cumulative_threadpool_numba_dense_finite_fast_path(monkeypatch):
+    df = _wide_frame(32, 32)
+
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_THRESHOLD", 1)
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_BYTES_PER_THREAD", 1)
+
+    for method in ("cumsum", "cumprod", "cummin", "cummax"):
+        with unlockedpd._PatchRegistry.temporarily_unpatched():
+            expected = getattr(df, method)(axis=1)
+        result = getattr(df, method)(axis=1)
+
+        tm.assert_frame_equal(result, expected)
+        assert get_last_selected_path() == "threadpool"
+
+
+def test_axis1_cumulative_thread_cap_scales_with_frame_size(monkeypatch):
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_BYTES_PER_THREAD", 1)
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_MEDIUM_FRAME_BYTES", 4096)
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_SMALL_THREAD_CAP", 4)
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_LARGE_THREAD_CAP", 12)
+    monkeypatch.setattr(cumulative_ops, "AXIS1_CUMULATIVE_THREAD_CAP", 16)
+
+    small = np.empty((8, 32), dtype=np.float64)
+    large = np.empty((32, 512), dtype=np.float64)
+
+    assert cumulative_ops._axis1_cumulative_thread_cap(small) == 4
+    assert cumulative_ops._axis1_cumulative_thread_cap(large) == 12
 
 
 def test_axis1_cumulative_skipna_matches_pandas():

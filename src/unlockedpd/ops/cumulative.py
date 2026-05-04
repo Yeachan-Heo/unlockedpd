@@ -22,6 +22,7 @@ from .._compat import (
 from .._resources import (
     assert_memory_budget,
     record_dispatch_path,
+    resolve_threadpool_workers,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -30,6 +31,73 @@ from .._resources import (
 # Based on benchmarking: parallel helps when n_cols >= 200 and n_rows >= 5000
 MIN_COLS_FOR_PARALLEL = 200
 MIN_ROWS_FOR_PARALLEL = 5000
+AXIS1_CUMULATIVE_THRESHOLD = 500_000
+AXIS1_CUMULATIVE_THREAD_CAP = 32
+AXIS1_CUMULATIVE_MEDIUM_FRAME_BYTES = 512 * 1024 * 1024
+AXIS1_CUMULATIVE_SMALL_THREAD_CAP = 16
+AXIS1_CUMULATIVE_LARGE_THREAD_CAP = 32
+AXIS1_CUMULATIVE_BYTES_PER_THREAD = 2 * 1024 * 1024
+
+
+def _axis1_cumulative_thread_cap(arr: np.ndarray) -> int:
+    """Return a size-aware cap for transient axis=1 cumulative workers."""
+
+    nbytes = int(getattr(arr, "nbytes", 0))
+    if nbytes <= 0:
+        return 1
+
+    size_cap = max(
+        1,
+        (nbytes + AXIS1_CUMULATIVE_BYTES_PER_THREAD - 1)
+        // AXIS1_CUMULATIVE_BYTES_PER_THREAD,
+    )
+    operation_cap = (
+        AXIS1_CUMULATIVE_SMALL_THREAD_CAP
+        if nbytes < AXIS1_CUMULATIVE_MEDIUM_FRAME_BYTES
+        else AXIS1_CUMULATIVE_LARGE_THREAD_CAP
+    )
+    return max(
+        1,
+        min(size_cap, operation_cap, AXIS1_CUMULATIVE_THREAD_CAP, arr.shape[0]),
+    )
+
+
+def _axis1_row_chunks(n_rows: int, workers: int):
+    chunk_size = max(1, (int(n_rows) + int(workers) - 1) // int(workers))
+    return [
+        (start, min(start + chunk_size, n_rows))
+        for start in range(0, n_rows, chunk_size)
+    ]
+
+
+def _bounded_axis1_cumulative(kernel, arr: np.ndarray) -> np.ndarray:
+    """Run finite row cumulative kernels using transient bounded workers."""
+
+    thread_cap = _axis1_cumulative_thread_cap(arr)
+    workers = resolve_threadpool_workers(
+        arr.shape[0],
+        operation="cumulative",
+        operation_cap=thread_cap,
+        memory_bandwidth_cap=thread_cap,
+        cap=thread_cap,
+    )
+    chunks = _axis1_row_chunks(arr.shape[0], workers)
+    workers = max(1, min(workers, len(chunks)))
+    result = np.empty_like(arr)
+
+    record_dispatch_path("threadpool" if workers > 1 else "serial_numba")
+    if workers == 1:
+        kernel(arr, result, 0, arr.shape[0])
+        return result
+
+    def process_chunk(bounds):
+        start_row, end_row = bounds
+        kernel(arr, result, start_row, end_row)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
+
+    return result
 
 
 # ============================================================================
@@ -228,6 +296,86 @@ def _normalize_axis(axis) -> int:
     raise ValueError(f"No axis named {axis!r}")
 
 
+@njit(nogil=True, fastmath=True, cache=True)
+def _cumsum_axis1_finite_chunk(arr, result, start_row, end_row):
+    """Dense finite cumsum(axis=1) over contiguous rows."""
+
+    n_cols = arr.shape[1]
+    for row in range(start_row, end_row):
+        total = 0.0
+        for col in range(n_cols):
+            total += arr[row, col]
+            result[row, col] = total
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def _cumprod_axis1_finite_chunk(arr, result, start_row, end_row):
+    """Dense finite cumprod(axis=1) over contiguous rows."""
+
+    n_cols = arr.shape[1]
+    for row in range(start_row, end_row):
+        total = 1.0
+        for col in range(n_cols):
+            total *= arr[row, col]
+            result[row, col] = total
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def _cummin_axis1_finite_chunk(arr, result, start_row, end_row):
+    """Dense finite cummin(axis=1) over contiguous rows."""
+
+    n_cols = arr.shape[1]
+    for row in range(start_row, end_row):
+        current = np.inf
+        for col in range(n_cols):
+            value = arr[row, col]
+            if value < current:
+                current = value
+            result[row, col] = current
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def _cummax_axis1_finite_chunk(arr, result, start_row, end_row):
+    """Dense finite cummax(axis=1) over contiguous rows."""
+
+    n_cols = arr.shape[1]
+    for row in range(start_row, end_row):
+        current = -np.inf
+        for col in range(n_cols):
+            value = arr[row, col]
+            if value > current:
+                current = value
+            result[row, col] = current
+
+
+def _axis1_numba_cumulative(arr: np.ndarray, op: str) -> np.ndarray | None:
+    """Return a dense finite row-parallel result, or ``None`` to use NumPy."""
+
+    if (
+        arr.dtype != np.float64
+        or arr.size < AXIS1_CUMULATIVE_THRESHOLD
+        or arr.shape[1] == 0
+        or not arr.flags.c_contiguous
+    ):
+        return None
+
+    # The Numba kernels are intentionally branch-free and fastmath-enabled.
+    # Keep exact pandas/NumPy behavior for NaN/inf edge cases by letting the
+    # existing NumPy path handle any non-finite frame.
+    if not np.isfinite(arr).all():
+        return None
+
+    if op == "cumsum":
+        return _bounded_axis1_cumulative(_cumsum_axis1_finite_chunk, arr)
+    if op == "cumprod":
+        return _bounded_axis1_cumulative(_cumprod_axis1_finite_chunk, arr)
+    if op == "cummin":
+        return _bounded_axis1_cumulative(_cummin_axis1_finite_chunk, arr)
+    if op == "cummax":
+        return _bounded_axis1_cumulative(_cummax_axis1_finite_chunk, arr)
+    return None
+
+
 def _numpy_accumulate(arr: np.ndarray, op: str, axis: int, skipna: bool) -> np.ndarray:
     """Run NumPy cumulative kernels with pandas-compatible skipna handling.
 
@@ -285,7 +433,10 @@ def _axis1_numpy_cumulative(df: pd.DataFrame, op: str, skipna: bool) -> pd.DataF
         ),
         operation="cumulative",
     )
-    return wrap_result_fast(_numpy_accumulate(arr, op, 1, skipna), df)
+    result = _axis1_numba_cumulative(arr, op)
+    if result is None:
+        result = _numpy_accumulate(arr, op, 1, skipna)
+    return wrap_result_fast(result, df)
 
 
 # ============================================================================
