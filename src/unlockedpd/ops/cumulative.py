@@ -7,9 +7,11 @@ true parallel execution.
 Key insight: Numba nogil kernels with ThreadPool provide 4.7x speedup over
 NumPy by enabling true parallel execution across multiple cores.
 """
+
 import numpy as np
 import pandas as pd
 from numba import njit
+from concurrent.futures import ThreadPoolExecutor
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
@@ -26,6 +28,7 @@ MIN_ROWS_FOR_PARALLEL = 5000
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
 # ============================================================================
+
 
 @njit(nogil=True, cache=True)
 def _cumsum_nogil_chunk(arr, result, start_col, end_col):
@@ -116,9 +119,11 @@ def _cummax_nogil_chunk(arr, result, start_col, end_col):
                     cummax = val
                 result[row, c] = cummax
 
+
 # ============================================================================
 # Core parallel implementations using ThreadPoolExecutor + nogil kernels
 # ============================================================================
+
 
 def _cumsum_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     """Parallel cumsum using nogil kernels for 4.7x speedup."""
@@ -191,9 +196,11 @@ def _cummax_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
 
     return result
 
+
 # ============================================================================
 # Dispatch functions (choose parallel vs pandas based on shape)
 # ============================================================================
+
 
 def _should_use_parallel(arr):
     """Determine if parallel execution is worthwhile.
@@ -205,16 +212,18 @@ def _should_use_parallel(arr):
     n_rows, n_cols = arr.shape
     return n_cols >= MIN_COLS_FOR_PARALLEL and n_rows >= MIN_ROWS_FOR_PARALLEL
 
+
 # ============================================================================
 # Wrapper functions for pandas DataFrame methods
 # ============================================================================
+
 
 def optimized_cumsum(df, axis=0, skipna=True, *args, **kwargs):
     """Optimized cumsum - parallel for wide DataFrames, pandas for narrow."""
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, 'index', None):
+    if axis not in (0, "index", None):
         raise ValueError("Only axis=0 is supported")
 
     # Handle empty DataFrame
@@ -228,15 +237,17 @@ def optimized_cumsum(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="cumulative",
+        )
         result = _cumsum_parallel(arr, skipna)
     else:
         # Fall back to pandas for small DataFrames
         raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
-        result, numeric_df, columns=numeric_cols,
-        merge_non_numeric=True, original_df=df
+        result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
     )
 
 
@@ -245,7 +256,7 @@ def optimized_cumprod(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, 'index', None):
+    if axis not in (0, "index", None):
         raise ValueError("Only axis=0 is supported")
 
     # Handle empty DataFrame
@@ -259,14 +270,16 @@ def optimized_cumprod(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="cumulative",
+        )
         result = _cumprod_parallel(arr, skipna)
     else:
         raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
-        result, numeric_df, columns=numeric_cols,
-        merge_non_numeric=True, original_df=df
+        result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
     )
 
 
@@ -275,7 +288,7 @@ def optimized_cummin(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, 'index', None):
+    if axis not in (0, "index", None):
         raise ValueError("Only axis=0 is supported")
 
     # Handle empty DataFrame
@@ -289,14 +302,16 @@ def optimized_cummin(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="cumulative",
+        )
         result = _cummin_parallel(arr, skipna)
     else:
         raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
-        result, numeric_df, columns=numeric_cols,
-        merge_non_numeric=True, original_df=df
+        result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
     )
 
 
@@ -305,7 +320,7 @@ def optimized_cummax(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, 'index', None):
+    if axis not in (0, "index", None):
         raise ValueError("Only axis=0 is supported")
 
     # Handle empty DataFrame
@@ -319,14 +334,16 @@ def optimized_cummax(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="cumulative",
+        )
         result = _cummax_parallel(arr, skipna)
     else:
         raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
-        result, numeric_df, columns=numeric_cols,
-        merge_non_numeric=True, original_df=df
+        result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
     )
 
 
@@ -338,7 +355,7 @@ def apply_cumulative_patches():
     """
     from .._patch import patch
 
-    patch(pd.DataFrame, 'cumsum', optimized_cumsum)
-    patch(pd.DataFrame, 'cumprod', optimized_cumprod)
-    patch(pd.DataFrame, 'cummin', optimized_cummin)
-    patch(pd.DataFrame, 'cummax', optimized_cummax)
+    patch(pd.DataFrame, "cumsum", optimized_cumsum)
+    patch(pd.DataFrame, "cumprod", optimized_cumprod)
+    patch(pd.DataFrame, "cummin", optimized_cummin)
+    patch(pd.DataFrame, "cummax", optimized_cummax)

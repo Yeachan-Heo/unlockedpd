@@ -8,11 +8,14 @@ This module provides optimized rolling window operations using:
 Key insight: @njit(nogil=True) releases the GIL, so ThreadPoolExecutor
 achieves true parallelism with Numba's fast compiled code.
 """
+
 import numpy as np
 from numba import njit, prange
 import pandas as pd
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from concurrent.futures import ThreadPoolExecutor
+
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
     simple_result_memory_estimate,
@@ -35,6 +38,7 @@ THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
 # ============================================================================
 # Core Numba-jitted functions (PARALLEL versions)
 # ============================================================================
+
 
 @njit(parallel=True, cache=True)
 def _rolling_sum_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
@@ -105,7 +109,9 @@ def _rolling_mean_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarr
 
 
 @njit(parallel=True, cache=True)
-def _rolling_mean_2d_centered(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_mean_2d_centered(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Compute centered rolling mean across columns in parallel.
 
     Centering algorithm:
@@ -138,7 +144,9 @@ def _rolling_mean_2d_centered(arr: np.ndarray, window: int, min_periods: int) ->
 
 
 @njit(parallel=True, cache=True)
-def _rolling_sum_2d_centered(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_sum_2d_centered(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Compute centered rolling sum across columns in parallel."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -164,7 +172,9 @@ def _rolling_sum_2d_centered(arr: np.ndarray, window: int, min_periods: int) -> 
 
 
 @njit(parallel=True, cache=True)
-def _rolling_std_2d(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_std_2d(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Compute rolling std using two-pass algorithm for numerical stability."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -208,7 +218,9 @@ def _rolling_std_2d(arr: np.ndarray, window: int, min_periods: int, ddof: int = 
 
 
 @njit(parallel=True, cache=True)
-def _rolling_var_2d(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_var_2d(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Compute rolling variance using two-pass algorithm."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -320,12 +332,16 @@ def _rolling_max_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarra
 
     return result
 
+
 # ============================================================================
 # Core Numba-jitted functions (SERIAL versions for small arrays)
 # ============================================================================
 
+
 @njit(cache=True)
-def _rolling_sum_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_sum_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial rolling sum for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -359,7 +375,9 @@ def _rolling_sum_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np
 
 
 @njit(cache=True)
-def _rolling_mean_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_mean_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial rolling mean for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -393,7 +411,9 @@ def _rolling_mean_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> n
 
 
 @njit(cache=True)
-def _rolling_std_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_std_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial rolling std for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -437,7 +457,9 @@ def _rolling_std_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof:
 
 
 @njit(cache=True)
-def _rolling_var_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_var_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial rolling variance for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -481,7 +503,9 @@ def _rolling_var_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof:
 
 
 @njit(cache=True)
-def _rolling_min_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_min_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial rolling min for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -516,7 +540,9 @@ def _rolling_min_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np
 
 
 @njit(cache=True)
-def _rolling_max_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_max_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial rolling max for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -549,9 +575,11 @@ def _rolling_max_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np
 
     return result
 
+
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
 # ============================================================================
+
 
 @njit(nogil=True, cache=True)
 def _rolling_mean_nogil_chunk(arr, result, start_col, end_col, window, min_periods):
@@ -618,7 +646,9 @@ def _rolling_sum_nogil_chunk(arr, result, start_col, end_col, window, min_period
 
 
 @njit(nogil=True, cache=True)
-def _rolling_std_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof):
+def _rolling_std_nogil_chunk(
+    arr, result, start_col, end_col, window, min_periods, ddof
+):
     """Rolling std using Welford's algorithm - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
@@ -653,7 +683,9 @@ def _rolling_std_nogil_chunk(arr, result, start_col, end_col, window, min_period
 
 
 @njit(nogil=True, cache=True)
-def _rolling_var_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof):
+def _rolling_var_nogil_chunk(
+    arr, result, start_col, end_col, window, min_periods, ddof
+):
     """Rolling variance - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
@@ -809,7 +841,9 @@ def _rolling_median_nogil_chunk(arr, result, start_col, end_col, window, min_per
 
 
 @njit(nogil=True, cache=True)
-def _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_periods, quantile):
+def _rolling_quantile_nogil_chunk(
+    arr, result, start_col, end_col, window, min_periods, quantile
+):
     """Rolling quantile using insertion sort - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
@@ -844,7 +878,9 @@ def _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_p
 
 
 @njit(nogil=True, cache=True)
-def _rolling_sem_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof):
+def _rolling_sem_nogil_chunk(
+    arr, result, start_col, end_col, window, min_periods, ddof
+):
     """Rolling SEM - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
@@ -923,7 +959,7 @@ def _rolling_skew_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarr
                 if m2 == 0.0:
                     result[row, col] = 0.0
                 elif m2 > 1e-14:
-                    skew = m3 / (m2 ** 1.5)
+                    skew = m3 / (m2**1.5)
                     # Apply bias correction
                     if count > 2:
                         adjust = np.sqrt(count * (count - 1)) / (count - 2)
@@ -934,7 +970,9 @@ def _rolling_skew_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarr
 
 
 @njit(cache=True)
-def _rolling_skew_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_skew_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial rolling skewness for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -981,7 +1019,7 @@ def _rolling_skew_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> n
                 if m2 == 0.0:
                     result[row, col] = 0.0
                 elif m2 > 1e-14:
-                    skew = m3 / (m2 ** 1.5)
+                    skew = m3 / (m2**1.5)
                     # Apply bias correction
                     if count > 2:
                         adjust = np.sqrt(count * (count - 1)) / (count - 2)
@@ -1050,7 +1088,9 @@ def _rolling_kurt_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarr
 
 
 @njit(cache=True)
-def _rolling_kurt_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_kurt_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial rolling kurtosis for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -1133,7 +1173,9 @@ def _rolling_count_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndar
 
 
 @njit(cache=True)
-def _rolling_count_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_count_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Serial count non-NaN values in rolling window for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -1158,7 +1200,9 @@ def _rolling_count_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> 
 
 
 @njit(parallel=True, cache=True)
-def _rolling_sem_2d(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_sem_2d(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Compute rolling standard error of mean (SEM) across columns in parallel.
 
     SEM = std(ddof) / sqrt(count - 1)
@@ -1203,7 +1247,9 @@ def _rolling_sem_2d(arr: np.ndarray, window: int, min_periods: int, ddof: int = 
 
 
 @njit(cache=True)
-def _rolling_sem_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_sem_2d_serial(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial rolling SEM for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -1242,12 +1288,16 @@ def _rolling_sem_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof:
 
     return result
 
+
 # ============================================================================
 # ThreadPool + NumPy cumsum trick for ultra-fast rolling (5x+ speedup)
 # Key insight: NumPy releases GIL, so ThreadPoolExecutor achieves true parallelism
 # ============================================================================
 
-def _rolling_mean_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+
+def _rolling_mean_threadpool(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Ultra-fast rolling mean using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1270,7 +1320,9 @@ def _rolling_mean_threadpool(arr: np.ndarray, window: int, min_periods: int) -> 
     return result
 
 
-def _rolling_sum_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_sum_threadpool(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Ultra-fast rolling sum using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1293,7 +1345,9 @@ def _rolling_sum_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     return result
 
 
-def _rolling_std_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_std_threadpool(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Ultra-fast rolling std using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1308,7 +1362,9 @@ def _rolling_std_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
 
     def process_chunk(args):
         start_col, end_col = args
-        _rolling_std_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
+        _rolling_std_nogil_chunk(
+            arr, result, start_col, end_col, window, min_periods, ddof
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -1316,7 +1372,9 @@ def _rolling_std_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     return result
 
 
-def _rolling_var_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_var_threadpool(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Ultra-fast rolling var using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1331,7 +1389,9 @@ def _rolling_var_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
 
     def process_chunk(args):
         start_col, end_col = args
-        _rolling_var_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
+        _rolling_var_nogil_chunk(
+            arr, result, start_col, end_col, window, min_periods, ddof
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -1339,7 +1399,9 @@ def _rolling_var_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     return result
 
 
-def _rolling_min_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_min_threadpool(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Ultra-fast rolling min using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1362,7 +1424,9 @@ def _rolling_min_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     return result
 
 
-def _rolling_max_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_max_threadpool(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Ultra-fast rolling max using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1385,7 +1449,9 @@ def _rolling_max_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     return result
 
 
-def _rolling_median_threadpool(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
+def _rolling_median_threadpool(
+    arr: np.ndarray, window: int, min_periods: int
+) -> np.ndarray:
     """Ultra-fast rolling median using ThreadPool + nogil kernels."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -1395,7 +1461,9 @@ def _rolling_median_threadpool(arr: np.ndarray, window: int, min_periods: int) -
 
     def process_chunk(args):
         start_col, end_col = args
-        _rolling_median_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
+        _rolling_median_nogil_chunk(
+            arr, result, start_col, end_col, window, min_periods
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -1403,7 +1471,9 @@ def _rolling_median_threadpool(arr: np.ndarray, window: int, min_periods: int) -
     return result
 
 
-def _rolling_quantile_threadpool(arr: np.ndarray, window: int, min_periods: int, quantile: float) -> np.ndarray:
+def _rolling_quantile_threadpool(
+    arr: np.ndarray, window: int, min_periods: int, quantile: float
+) -> np.ndarray:
     """Ultra-fast rolling quantile using ThreadPool + nogil kernels."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -1413,7 +1483,9 @@ def _rolling_quantile_threadpool(arr: np.ndarray, window: int, min_periods: int,
 
     def process_chunk(args):
         start_col, end_col = args
-        _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_periods, quantile)
+        _rolling_quantile_nogil_chunk(
+            arr, result, start_col, end_col, window, min_periods, quantile
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -1421,7 +1493,9 @@ def _rolling_quantile_threadpool(arr: np.ndarray, window: int, min_periods: int,
     return result
 
 
-def _rolling_sem_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _rolling_sem_threadpool(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Ultra-fast rolling SEM using ThreadPool + nogil Numba kernels.
 
     4.7x faster than pandas by combining:
@@ -1436,21 +1510,28 @@ def _rolling_sem_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
 
     def process_chunk(args):
         start_col, end_col = args
-        _rolling_sem_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
+        _rolling_sem_nogil_chunk(
+            arr, result, start_col, end_col, window, min_periods, ddof
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
 
     return result
 
+
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
 # ============================================================================
 
+
 def _rolling_sum_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_sum_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_sum_2d_serial(arr, window, min_periods)
@@ -1460,7 +1541,10 @@ def _rolling_sum_dispatch(arr, window, min_periods):
 def _rolling_mean_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_mean_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_mean_2d_serial(arr, window, min_periods)
@@ -1470,7 +1554,10 @@ def _rolling_mean_dispatch(arr, window, min_periods):
 def _rolling_std_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_std_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return rolling_std_welford_serial(arr, window, min_periods, ddof)
@@ -1480,7 +1567,10 @@ def _rolling_std_dispatch(arr, window, min_periods, ddof=1):
 def _rolling_var_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_var_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return rolling_var_welford_serial(arr, window, min_periods, ddof)
@@ -1490,7 +1580,10 @@ def _rolling_var_dispatch(arr, window, min_periods, ddof=1):
 def _rolling_min_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_min_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_min_2d_serial(arr, window, min_periods)
@@ -1500,7 +1593,10 @@ def _rolling_min_dispatch(arr, window, min_periods):
 def _rolling_max_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_max_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_max_2d_serial(arr, window, min_periods)
@@ -1531,7 +1627,10 @@ def _rolling_count_dispatch(arr, window, min_periods):
 def _rolling_median_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool for large arrays."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_median_threadpool(arr, window, min_periods)
     # For smaller arrays, use serial version
     return _rolling_median_threadpool(arr, window, min_periods)  # Always use optimized
@@ -1540,7 +1639,10 @@ def _rolling_median_dispatch(arr, window, min_periods):
 def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
     """Dispatch to ThreadPool for large arrays."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
     return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
 
@@ -1548,15 +1650,20 @@ def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
 def _rolling_sem_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="rolling",
+        )
         return _rolling_sem_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_sem_2d_serial(arr, window, min_periods, ddof)
     return _rolling_sem_2d(arr, window, min_periods, ddof)
 
+
 # ============================================================================
 # Wrapper functions for pandas Rolling objects
 # ============================================================================
+
 
 def _make_rolling_wrapper(numba_func, numba_func_centered=None, dispatch_func=None):
     """Factory to create wrapper functions for rolling operations."""
@@ -1564,8 +1671,10 @@ def _make_rolling_wrapper(numba_func, numba_func_centered=None, dispatch_func=No
     def wrapper(rolling_obj, *args, **kwargs):
         obj = rolling_obj.obj
         window = rolling_obj.window
-        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
-        center = getattr(rolling_obj, 'center', False)
+        min_periods = (
+            rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        )
+        center = getattr(rolling_obj, "center", False)
 
         # Only optimize DataFrames
         if not isinstance(obj, pd.DataFrame):
@@ -1600,8 +1709,11 @@ def _make_rolling_wrapper(numba_func, numba_func_centered=None, dispatch_func=No
             result = numba_func(arr, window, min_periods)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -1613,7 +1725,9 @@ def _make_rolling_std_wrapper():
     def wrapper(rolling_obj, ddof=1, *args, **kwargs):
         obj = rolling_obj.obj
         window = rolling_obj.window
-        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        min_periods = (
+            rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        )
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1638,8 +1752,11 @@ def _make_rolling_std_wrapper():
         result = _rolling_std_dispatch(arr, window, min_periods, ddof)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -1651,7 +1768,9 @@ def _make_rolling_var_wrapper():
     def wrapper(rolling_obj, ddof=1, *args, **kwargs):
         obj = rolling_obj.obj
         window = rolling_obj.window
-        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        min_periods = (
+            rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        )
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1676,8 +1795,11 @@ def _make_rolling_var_wrapper():
         result = _rolling_var_dispatch(arr, window, min_periods, ddof)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -1685,10 +1807,13 @@ def _make_rolling_var_wrapper():
 
 def _make_rolling_median_wrapper():
     """Create wrapper for rolling median."""
+
     def wrapper(rolling_obj, *args, **kwargs):
         obj = rolling_obj.obj
         window = rolling_obj.window
-        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        min_periods = (
+            rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        )
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1710,17 +1835,26 @@ def _make_rolling_median_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_median_dispatch(arr, window, min_periods)
 
-        return wrap_result(result, numeric_df, columns=numeric_cols,
-                          merge_non_numeric=True, original_df=obj)
+        return wrap_result(
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
+        )
+
     return wrapper
 
 
 def _make_rolling_quantile_wrapper():
     """Create wrapper for rolling quantile."""
-    def wrapper(rolling_obj, quantile, interpolation='linear', *args, **kwargs):
+
+    def wrapper(rolling_obj, quantile, interpolation="linear", *args, **kwargs):
         obj = rolling_obj.obj
         window = rolling_obj.window
-        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        min_periods = (
+            rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        )
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1742,8 +1876,14 @@ def _make_rolling_quantile_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_quantile_dispatch(arr, window, min_periods, quantile)
 
-        return wrap_result(result, numeric_df, columns=numeric_cols,
-                          merge_non_numeric=True, original_df=obj)
+        return wrap_result(
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
+        )
+
     return wrapper
 
 
@@ -1753,7 +1893,9 @@ def _make_rolling_sem_wrapper():
     def wrapper(rolling_obj, ddof=1, *args, **kwargs):
         obj = rolling_obj.obj
         window = rolling_obj.window
-        min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        min_periods = (
+            rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+        )
 
         if window > len(obj):
             if isinstance(obj, pd.DataFrame):
@@ -1774,23 +1916,40 @@ def _make_rolling_sem_wrapper():
         result = _rolling_sem_dispatch(arr, window, min_periods, ddof)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
 
 
 # Create wrapper instances
-optimized_rolling_sum = _make_rolling_wrapper(_rolling_sum_2d, _rolling_sum_2d_centered, _rolling_sum_dispatch)
-optimized_rolling_mean = _make_rolling_wrapper(_rolling_mean_2d, _rolling_mean_2d_centered, _rolling_mean_dispatch)
+optimized_rolling_sum = _make_rolling_wrapper(
+    _rolling_sum_2d, _rolling_sum_2d_centered, _rolling_sum_dispatch
+)
+optimized_rolling_mean = _make_rolling_wrapper(
+    _rolling_mean_2d, _rolling_mean_2d_centered, _rolling_mean_dispatch
+)
 optimized_rolling_std = _make_rolling_std_wrapper()
 optimized_rolling_var = _make_rolling_var_wrapper()
-optimized_rolling_min = _make_rolling_wrapper(_rolling_min_2d, None, _rolling_min_dispatch)
-optimized_rolling_max = _make_rolling_wrapper(_rolling_max_2d, None, _rolling_max_dispatch)
-optimized_rolling_skew = _make_rolling_wrapper(_rolling_skew_2d, None, _rolling_skew_dispatch)
-optimized_rolling_kurt = _make_rolling_wrapper(_rolling_kurt_2d, None, _rolling_kurt_dispatch)
-optimized_rolling_count = _make_rolling_wrapper(_rolling_count_2d, None, _rolling_count_dispatch)
+optimized_rolling_min = _make_rolling_wrapper(
+    _rolling_min_2d, None, _rolling_min_dispatch
+)
+optimized_rolling_max = _make_rolling_wrapper(
+    _rolling_max_2d, None, _rolling_max_dispatch
+)
+optimized_rolling_skew = _make_rolling_wrapper(
+    _rolling_skew_2d, None, _rolling_skew_dispatch
+)
+optimized_rolling_kurt = _make_rolling_wrapper(
+    _rolling_kurt_2d, None, _rolling_kurt_dispatch
+)
+optimized_rolling_count = _make_rolling_wrapper(
+    _rolling_count_2d, None, _rolling_count_dispatch
+)
 optimized_rolling_median = _make_rolling_median_wrapper()
 optimized_rolling_quantile = _make_rolling_quantile_wrapper()
 optimized_rolling_sem = _make_rolling_sem_wrapper()
@@ -1802,15 +1961,15 @@ def apply_rolling_patches():
 
     Rolling = pd.core.window.rolling.Rolling
 
-    patch(Rolling, 'sum', optimized_rolling_sum)
-    patch(Rolling, 'mean', optimized_rolling_mean)
-    patch(Rolling, 'std', optimized_rolling_std)
-    patch(Rolling, 'var', optimized_rolling_var)
-    patch(Rolling, 'min', optimized_rolling_min)
-    patch(Rolling, 'max', optimized_rolling_max)
-    patch(Rolling, 'skew', optimized_rolling_skew)
-    patch(Rolling, 'kurt', optimized_rolling_kurt)
-    patch(Rolling, 'count', optimized_rolling_count)
-    patch(Rolling, 'median', optimized_rolling_median)
-    patch(Rolling, 'quantile', optimized_rolling_quantile)
-    patch(Rolling, 'sem', optimized_rolling_sem)
+    patch(Rolling, "sum", optimized_rolling_sum)
+    patch(Rolling, "mean", optimized_rolling_mean)
+    patch(Rolling, "std", optimized_rolling_std)
+    patch(Rolling, "var", optimized_rolling_var)
+    patch(Rolling, "min", optimized_rolling_min)
+    patch(Rolling, "max", optimized_rolling_max)
+    patch(Rolling, "skew", optimized_rolling_skew)
+    patch(Rolling, "kurt", optimized_rolling_kurt)
+    patch(Rolling, "count", optimized_rolling_count)
+    patch(Rolling, "median", optimized_rolling_median)
+    patch(Rolling, "quantile", optimized_rolling_quantile)
+    patch(Rolling, "sem", optimized_rolling_sem)

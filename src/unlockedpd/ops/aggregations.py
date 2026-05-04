@@ -8,9 +8,11 @@ Operations support axis parameter:
 - axis=0: Reduce rows -> output shape (n_cols,) -> Series indexed by columns
 - axis=1: Reduce columns -> output shape (n_rows,) -> Series indexed by original index
 """
+
 import numpy as np
 import pandas as pd
 from numba import njit, prange
+from concurrent.futures import ThreadPoolExecutor
 from .._compat import get_numeric_columns_fast, ensure_float64
 from .._resources import (
     assert_memory_budget,
@@ -19,13 +21,14 @@ from .._resources import (
 )
 
 # Thresholds for parallel execution dispatch
-PARALLEL_THRESHOLD = 500_000      # Use parallel prange above this
-THREADPOOL_THRESHOLD = 10_000_000 # Use ThreadPool+nogil above this
+PARALLEL_THRESHOLD = 500_000  # Use parallel prange above this
+THREADPOOL_THRESHOLD = 10_000_000  # Use ThreadPool+nogil above this
 
 
 # ============================================================================
 # SUM OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _sum_serial(arr, skipna):
@@ -126,7 +129,10 @@ def _sum_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _sum_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _sum_parallel(arr, skipna)
@@ -135,9 +141,11 @@ def _sum_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # MEAN OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _mean_serial(arr, skipna):
@@ -232,7 +240,10 @@ def _mean_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _mean_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _mean_parallel(arr, skipna)
@@ -241,9 +252,11 @@ def _mean_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # STD/VAR OPERATIONS (Welford's Algorithm for Numerical Stability)
 # ============================================================================
+
 
 @njit(cache=True)
 def _var_serial(arr, skipna, ddof):
@@ -371,7 +384,10 @@ def _var_dispatch(arr, skipna, axis, ddof):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _var_threadpool(arr, skipna, ddof)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _var_parallel(arr, skipna, ddof)
@@ -479,7 +495,10 @@ def _std_dispatch(arr, skipna, axis, ddof):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _std_threadpool(arr, skipna, ddof)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _std_parallel(arr, skipna, ddof)
@@ -488,9 +507,11 @@ def _std_dispatch(arr, skipna, axis, ddof):
 
     return result
 
+
 # ============================================================================
 # MIN OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _min_serial(arr, skipna):
@@ -609,7 +630,10 @@ def _min_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _min_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _min_parallel(arr, skipna)
@@ -618,9 +642,11 @@ def _min_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # MAX OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _max_serial(arr, skipna):
@@ -739,7 +765,10 @@ def _max_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _max_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _max_parallel(arr, skipna)
@@ -748,9 +777,11 @@ def _max_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # MEDIAN OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _median_serial(arr, skipna):
@@ -886,7 +917,10 @@ def _median_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _median_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _median_parallel(arr, skipna)
@@ -895,9 +929,11 @@ def _median_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # PROD OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _prod_serial(arr, skipna):
@@ -1007,7 +1043,10 @@ def _prod_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _prod_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _prod_parallel(arr, skipna)
@@ -1016,9 +1055,11 @@ def _prod_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # QUANTILE OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _quantile_column(arr: np.ndarray, q: float) -> float:
@@ -1113,7 +1154,10 @@ def _quantile_dispatch(arr, q, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0),
+            operation="aggregation",
+        )
         result = _quantile_threadpool(arr, q)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _quantile_parallel(arr, q)
@@ -1122,9 +1166,11 @@ def _quantile_dispatch(arr, q, axis):
 
     return result
 
+
 # ============================================================================
 # ALL OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _all_serial(arr, skipna):
@@ -1184,9 +1230,11 @@ def _all_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # ANY OPERATION
 # ============================================================================
+
 
 @njit(cache=True)
 def _any_serial(arr, skipna):
@@ -1245,9 +1293,11 @@ def _any_dispatch(arr, skipna, axis):
 
     return result
 
+
 # ============================================================================
 # PANDAS WRAPPER FUNCTIONS
 # ============================================================================
+
 
 def optimized_sum(self, axis=0, skipna=True, numeric_only=False, min_count=0, **kwargs):
     """Optimized sum reduction for DataFrame."""
@@ -1255,9 +1305,9 @@ def optimized_sum(self, axis=0, skipna=True, numeric_only=False, min_count=0, **
         raise TypeError("Optimization only for DataFrame")
 
     # Normalize axis
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1289,9 +1339,9 @@ def optimized_mean(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1323,9 +1373,9 @@ def optimized_std(self, axis=0, skipna=True, ddof=1, numeric_only=False, **kwarg
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1357,9 +1407,9 @@ def optimized_var(self, axis=0, skipna=True, ddof=1, numeric_only=False, **kwarg
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1391,9 +1441,9 @@ def optimized_min(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1425,9 +1475,9 @@ def optimized_max(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1459,9 +1509,9 @@ def optimized_median(self, axis=0, skipna=True, numeric_only=False, **kwargs):
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle 0x0 empty DataFrame - MUST return empty Series like pandas
@@ -1488,14 +1538,16 @@ def optimized_median(self, axis=0, skipna=True, numeric_only=False, **kwargs):
         return pd.Series(result, index=self.index)
 
 
-def optimized_prod(self, axis=0, skipna=True, numeric_only=False, min_count=0, **kwargs):
+def optimized_prod(
+    self, axis=0, skipna=True, numeric_only=False, min_count=0, **kwargs
+):
     """Optimized prod reduction for DataFrame."""
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
@@ -1511,7 +1563,9 @@ def optimized_prod(self, axis=0, skipna=True, numeric_only=False, min_count=0, *
         return pd.Series(result, index=self.index)
 
 
-def optimized_quantile(self, q=0.5, axis=0, numeric_only=True, interpolation='linear', method='single'):
+def optimized_quantile(
+    self, q=0.5, axis=0, numeric_only=True, interpolation="linear", method="single"
+):
     """Optimized quantile computation.
 
     Parameters
@@ -1537,13 +1591,13 @@ def optimized_quantile(self, q=0.5, axis=0, numeric_only=True, interpolation='li
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if interpolation != 'linear':
+    if interpolation != "linear":
         raise TypeError(f"Only 'linear' interpolation optimized, got '{interpolation}'")
 
     # Normalize axis
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
 
     # Handle empty DataFrame
@@ -1551,7 +1605,9 @@ def optimized_quantile(self, q=0.5, axis=0, numeric_only=True, interpolation='li
         if isinstance(q, (list, np.ndarray)):
             return pd.DataFrame()
         # Use Index with dtype='object' to match pandas behavior
-        return pd.Series([], dtype=np.float64, index=pd.Index([], dtype='object'), name=q)
+        return pd.Series(
+            [], dtype=np.float64, index=pd.Index([], dtype="object"), name=q
+        )
 
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
@@ -1583,7 +1639,7 @@ def optimized_quantile(self, q=0.5, axis=0, numeric_only=True, interpolation='li
 
 def optimized_all(self, axis=0, bool_only=None, skipna=True, **kwargs):
     """Optimized boolean all operation.
-    
+
     Parameters
     ----------
     self : DataFrame
@@ -1593,7 +1649,7 @@ def optimized_all(self, axis=0, bool_only=None, skipna=True, **kwargs):
     bool_only : ignored
     skipna : bool, default True
         Exclude NaN values
-        
+
     Returns
     -------
     Series
@@ -1601,31 +1657,31 @@ def optimized_all(self, axis=0, bool_only=None, skipna=True, **kwargs):
     """
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
-    
+
     # Normalize axis
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
-    
+
     # Handle empty DataFrame
     if self.empty and self.shape[1] == 0:
         return pd.Series([], dtype=bool)
-    
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
-    
+
     # Handle 0 rows with columns
     if numeric_df.shape[0] == 0:
         if axis == 0:
             return pd.Series(True, index=numeric_cols, dtype=bool)
         else:
             return pd.Series([], dtype=bool)
-    
+
     arr = ensure_float64(numeric_df.values)
     result = _all_dispatch(arr, skipna, axis)
-    
+
     if axis == 0:
         return pd.Series(result, index=numeric_cols)
     else:
@@ -1634,7 +1690,7 @@ def optimized_all(self, axis=0, bool_only=None, skipna=True, **kwargs):
 
 def optimized_any(self, axis=0, bool_only=None, skipna=True, **kwargs):
     """Optimized boolean any operation.
-    
+
     Parameters
     ----------
     self : DataFrame
@@ -1644,7 +1700,7 @@ def optimized_any(self, axis=0, bool_only=None, skipna=True, **kwargs):
     bool_only : ignored
     skipna : bool, default True
         Exclude NaN values
-        
+
     Returns
     -------
     Series
@@ -1652,39 +1708,41 @@ def optimized_any(self, axis=0, bool_only=None, skipna=True, **kwargs):
     """
     if not isinstance(self, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
-    
+
     # Normalize axis
-    if axis is None or axis == 'index':
+    if axis is None or axis == "index":
         axis = 0
-    elif axis == 'columns':
+    elif axis == "columns":
         axis = 1
-    
+
     # Handle empty DataFrame
     if self.empty and self.shape[1] == 0:
         return pd.Series([], dtype=bool)
-    
+
     numeric_cols, numeric_df = get_numeric_columns_fast(self)
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns")
-    
+
     # Handle 0 rows with columns
     if numeric_df.shape[0] == 0:
         if axis == 0:
             return pd.Series(False, index=numeric_cols, dtype=bool)
         else:
             return pd.Series([], dtype=bool)
-    
+
     arr = ensure_float64(numeric_df.values)
     result = _any_dispatch(arr, skipna, axis)
-    
+
     if axis == 0:
         return pd.Series(result, index=numeric_cols)
     else:
         return pd.Series(result, index=self.index)
 
+
 # ============================================================================
 # PATCH REGISTRATION
 # ============================================================================
+
 
 def apply_aggregation_patches():
     """Apply aggregation operation patches to pandas DataFrame.
@@ -1695,14 +1753,14 @@ def apply_aggregation_patches():
     """
     from .._patch import patch
 
-    patch(pd.DataFrame, 'sum', optimized_sum)
-    patch(pd.DataFrame, 'mean', optimized_mean)
-    patch(pd.DataFrame, 'std', optimized_std)
-    patch(pd.DataFrame, 'var', optimized_var)
-    patch(pd.DataFrame, 'min', optimized_min)
-    patch(pd.DataFrame, 'max', optimized_max)
-    patch(pd.DataFrame, 'median', optimized_median)
-    patch(pd.DataFrame, 'prod', optimized_prod)
-    patch(pd.DataFrame, 'quantile', optimized_quantile)
-    patch(pd.DataFrame, 'all', optimized_all)
-    patch(pd.DataFrame, 'any', optimized_any)
+    patch(pd.DataFrame, "sum", optimized_sum)
+    patch(pd.DataFrame, "mean", optimized_mean)
+    patch(pd.DataFrame, "std", optimized_std)
+    patch(pd.DataFrame, "var", optimized_var)
+    patch(pd.DataFrame, "min", optimized_min)
+    patch(pd.DataFrame, "max", optimized_max)
+    patch(pd.DataFrame, "median", optimized_median)
+    patch(pd.DataFrame, "prod", optimized_prod)
+    patch(pd.DataFrame, "quantile", optimized_quantile)
+    patch(pd.DataFrame, "all", optimized_all)
+    patch(pd.DataFrame, "any", optimized_any)
