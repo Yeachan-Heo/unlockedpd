@@ -11,9 +11,8 @@ achieves true parallelism with Numba's fast compiled code.
 import numpy as np
 from numba import njit, prange
 import pandas as pd
-from typing import Union
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from ._threadpool import run_threadpool_chunks
 from ._welford import (
     rolling_std_welford_parallel,

@@ -10,7 +10,6 @@ Operations support axis parameter:
 """
 import numpy as np
 import pandas as pd
-from typing import Union
 from numba import njit, prange
 
 from .._compat import get_numeric_columns_fast, ensure_float64
@@ -1049,7 +1048,6 @@ def _quantile_serial(arr: np.ndarray, q: float) -> np.ndarray:
 @njit(nogil=True, cache=True)
 def _quantile_nogil_chunk(arr, result, start_col, end_col, q):
     """Quantile reduction - GIL released."""
-    n_rows = arr.shape[0]
     for c in range(start_col, end_col):
         col_data = arr[:, c].copy()
         result[c] = _quantile_column(col_data, q)

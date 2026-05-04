@@ -11,9 +11,8 @@ true parallelism across columns.
 import numpy as np
 from numba import njit, prange
 import pandas as pd
-from typing import Union
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from ._threadpool import run_threadpool_chunks
 
 # Threshold for parallel vs serial execution (elements)
@@ -235,7 +234,6 @@ def _expanding_skew_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 n = count + 1
                 delta = val - M1
                 delta_n = delta / n
-                delta_n2 = delta_n * delta_n
                 term1 = delta * delta_n * count
 
                 M1 = M1 + delta_n
@@ -515,7 +513,6 @@ def _expanding_skew_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 n = count + 1
                 delta = val - M1
                 delta_n = delta / n
-                delta_n2 = delta_n * delta_n
                 term1 = delta * delta_n * count
 
                 M1 = M1 + delta_n

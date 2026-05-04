@@ -9,7 +9,6 @@ NumPy by enabling true parallel execution across multiple cores.
 """
 import numpy as np
 import pandas as pd
-from typing import Union
 from numba import njit
 
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64

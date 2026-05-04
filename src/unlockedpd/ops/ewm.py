@@ -6,9 +6,8 @@ that parallelize across columns for significant speedup on wide DataFrames.
 import numpy as np
 from numba import njit, prange
 import pandas as pd
-from typing import Union, Optional
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from ._threadpool import run_threadpool_chunks
 
 # Threshold for parallel vs serial execution (elements)
