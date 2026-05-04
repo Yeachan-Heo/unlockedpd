@@ -97,3 +97,14 @@ def test_axis1_pct_change_fill_none_uses_pandas_primitives_path():
 
     tm.assert_frame_equal(result, expected)
     assert get_last_selected_path() == "pandas_primitives"
+
+
+def test_axis1_shift_fill_none_uses_no_fill_value_native_path():
+    df = _wide_frame()
+
+    with unlockedpd._PatchRegistry.temporarily_unpatched():
+        expected = df.shift(axis=1, fill_value=None)
+    result = df.shift(axis=1, fill_value=None)
+
+    tm.assert_frame_equal(result, expected)
+    assert get_last_selected_path() == "pandas_native"

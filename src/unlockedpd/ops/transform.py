@@ -698,7 +698,26 @@ def apply_transform_patches():
             )
 
     def _patched_shift(self, periods=1, freq=None, axis=0, fill_value=None, **kwargs):
-        if not config.enabled or _normalize_axis(axis) == 1:
+        axis_number = _normalize_axis(axis)
+        if not config.enabled:
+            return original_shift(
+                self,
+                periods=periods,
+                freq=freq,
+                axis=axis,
+                fill_value=fill_value,
+                **kwargs,
+            )
+        if axis_number == 1:
+            record_dispatch_path("pandas_native")
+            if fill_value is None:
+                return original_shift(
+                    self,
+                    periods=periods,
+                    freq=freq,
+                    axis=axis,
+                    **kwargs,
+                )
             return original_shift(
                 self,
                 periods=periods,

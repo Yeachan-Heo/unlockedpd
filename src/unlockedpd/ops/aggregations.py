@@ -196,7 +196,10 @@ def _mean_axis0_dense_blocks(arr, blocks):
 def _dense_axis0_no_missing_reduction(arr, op, skipna):
     """Use bounded row-block reducers for very large dense axis=0 sum/mean."""
 
-    if arr.size < DENSE_AXIS0_BLOCK_THRESHOLD or arr.shape[0] == 0:
+    if arr.shape[0] == 0:
+        return None
+
+    if arr.size < DENSE_AXIS0_BLOCK_THRESHOLD:
         return None
 
     if op == "sum":

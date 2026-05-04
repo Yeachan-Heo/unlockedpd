@@ -57,12 +57,19 @@ def is_all_numeric(df: pd.DataFrame) -> bool:
     """
     if len(df.columns) == 0:
         return False
-    # Check dtype kinds without materializing one Series per column.
-    # b=bool, i=int, u=uint, f=float, c=complex
-    for dtype in df.dtypes:
-        if dtype.kind not in "biufc":
-            return False
-    return True
+    # Fast path through the manager blocks avoids materializing df.dtypes and
+    # reduces the all-float wide-frame check from O(columns) Python objects to
+    # O(blocks).  Fall back to public dtypes if a future manager API changes.
+    try:
+        for block in df._mgr.blocks:
+            if block.dtype.kind not in "biufc":
+                return False
+        return True
+    except Exception:
+        for dtype in df.dtypes:
+            if dtype.kind not in "biufc":
+                return False
+        return True
 
 
 def get_numeric_columns_fast(df: pd.DataFrame) -> Tuple[List[str], pd.DataFrame]:
@@ -73,7 +80,7 @@ def get_numeric_columns_fast(df: pd.DataFrame) -> Tuple[List[str], pd.DataFrame]
     """
     # Fast path: check if all columns are numeric
     if is_all_numeric(df):
-        return list(df.columns), df
+        return df.columns, df
     # Slow path: mixed types, need to filter
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     if not numeric_cols:
