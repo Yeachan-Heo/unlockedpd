@@ -6,45 +6,24 @@ from typing import Callable, List, Tuple
 
 
 DEFAULT_THREADPOOL_WORKER_CAP = 32
-AUTO_VALUES = {"", "0", "auto", "none", "default"}
 
 
-def _coerce_positive_int(value) -> int:
-    """Return a positive integer value, or 0 when unset/auto/invalid."""
-    if value is None:
-        return 0
-
-    if isinstance(value, str):
-        stripped = value.strip().lower()
-        if stripped in AUTO_VALUES:
-            return 0
-        try:
-            parsed = int(stripped)
-        except ValueError:
-            return 0
-    else:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return 0
-
-    return parsed if parsed > 0 else 0
+def _fallback_threadpool_workers(work_units: int, operation_cap: int) -> int:
+    """Resolve workers before the shared resource helper is integrated."""
+    units = max(1, int(work_units))
+    cpu_count = os.cpu_count() or 8
+    cap = max(1, int(operation_cap))
+    return max(1, min(units, cpu_count, cap))
 
 
-def _configured_threadpool_workers() -> int:
-    """Read the runtime/env ThreadPool cap without making config mandatory."""
-    configured = 0
+def _resource_threadpool_workers(work_units: int, operation_cap: int) -> int:
+    """Delegate worker-count policy to the shared resource helper when present."""
     try:
-        from .._config import config
+        from .._resources import resolve_threadpool_workers as resolve_workers
+    except ImportError:
+        return _fallback_threadpool_workers(work_units, operation_cap)
 
-        configured = _coerce_positive_int(getattr(config, "threadpool_workers", 0))
-    except Exception:
-        configured = 0
-
-    if configured:
-        return configured
-
-    return _coerce_positive_int(os.environ.get("UNLOCKEDPD_THREADPOOL_WORKERS"))
+    return resolve_workers(work_units=work_units, operation_cap=operation_cap)
 
 
 def resolve_threadpool_workers(
@@ -56,19 +35,11 @@ def resolve_threadpool_workers(
 
     Resolution intentionally caps workers by available work units so wide/large
     operations keep parallel paths while narrow shapes do not fan out idle
-    Python workers.  When worker-2's config/resource lane adds
-    ``config.threadpool_workers`` this helper will honor it; until then it
-    supports ``UNLOCKEDPD_THREADPOOL_WORKERS`` directly.
+    Python workers.  Config/resource-budget policy lives in
+    ``unlockedpd._resources``; this ops helper only owns chunk construction and
+    ThreadPool execution.
     """
-    units = max(1, int(work_units))
-    cpu_count = os.cpu_count() or 8
-    configured = _configured_threadpool_workers()
-
-    candidates = [units, cpu_count, max(1, int(operation_cap))]
-    if configured:
-        candidates.append(configured)
-
-    return max(1, min(candidates))
+    return _resource_threadpool_workers(work_units, operation_cap)
 
 
 def make_threadpool_chunks(
