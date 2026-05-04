@@ -12,7 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 
 from .._compat import get_numeric_columns_fast, ensure_float64
+from ._threadpool import make_threadpool_chunks
 
+PAIRWISE_THREADPOOL_CAP = 32
 THREADPOOL_THRESHOLD = 10_000_000
 PAIRWISE_MEMORY_AVAILABLE_FRACTION = 0.75
 _FLOAT64_SIZE = np.dtype(np.float64).itemsize
@@ -122,6 +124,11 @@ def _pair_index_arrays(n_cols):
             idx += 1
 
     return pairs_i, pairs_j
+
+
+def _pairwise_threadpool_chunks(n_pairs):
+    """Use the shared ops ThreadPool wrapper for pairwise work chunking."""
+    return make_threadpool_chunks(n_pairs, operation_cap=PAIRWISE_THREADPOOL_CAP)
 
 
 def _pairwise_result_frame(result_2d, obj, numeric_columns):
@@ -376,7 +383,7 @@ def _rolling_cov_pairwise_threadpool(arr, window, min_periods, ddof=1):
     result_flat = np.empty((n_rows, n_pairs), dtype=np.float64)
     result_flat[:] = np.nan
 
-    workers, chunks = use_threadpool_path(n_pairs, operation="pairwise")
+    workers, chunks = _pairwise_threadpool_chunks(n_pairs)
 
     def process_chunk(args):
         start_pair, end_pair = args
@@ -410,7 +417,7 @@ def _rolling_corr_pairwise_threadpool(arr, window, min_periods):
     result_flat = np.empty((n_rows, n_pairs), dtype=np.float64)
     result_flat[:] = np.nan
 
-    workers, chunks = use_threadpool_path(n_pairs, operation="pairwise")
+    workers, chunks = _pairwise_threadpool_chunks(n_pairs)
 
     def process_chunk(args):
         start_pair, end_pair = args
@@ -442,8 +449,7 @@ def _rolling_cov_pairwise_threadpool_frame(arr, window, min_periods, ddof=1):
     result_2d = np.empty((n_rows * n_cols, n_cols), dtype=np.float64)
     result_2d[:] = np.nan
 
-    workers = min(THREADPOOL_WORKERS, max(1, n_pairs))
-    chunk_size = max(1, (n_pairs + workers - 1) // workers)
+    workers, chunks = _pairwise_threadpool_chunks(n_pairs)
 
     def process_chunk(args):
         start_pair, end_pair = args
@@ -461,12 +467,6 @@ def _rolling_cov_pairwise_threadpool_frame(arr, window, min_periods, ddof=1):
             n_cols,
         )
 
-    chunks = [
-        (k * chunk_size, min((k + 1) * chunk_size, n_pairs))
-        for k in range(workers)
-        if k * chunk_size < n_pairs
-    ]
-
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
 
@@ -482,8 +482,7 @@ def _rolling_corr_pairwise_threadpool_frame(arr, window, min_periods):
     result_2d = np.empty((n_rows * n_cols, n_cols), dtype=np.float64)
     result_2d[:] = np.nan
 
-    workers = min(THREADPOOL_WORKERS, max(1, n_pairs))
-    chunk_size = max(1, (n_pairs + workers - 1) // workers)
+    workers, chunks = _pairwise_threadpool_chunks(n_pairs)
 
     def process_chunk(args):
         start_pair, end_pair = args
@@ -499,12 +498,6 @@ def _rolling_corr_pairwise_threadpool_frame(arr, window, min_periods):
             n_rows,
             n_cols,
         )
-
-    chunks = [
-        (k * chunk_size, min((k + 1) * chunk_size, n_pairs))
-        for k in range(workers)
-        if k * chunk_size < n_pairs
-    ]
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
