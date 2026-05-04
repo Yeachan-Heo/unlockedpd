@@ -13,7 +13,7 @@ import numpy as np
 from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
+from .._compat import get_numeric_columns_fast, wrap_result, wrap_result_fast, ensure_float64
 from .._resources import (
     assert_memory_budget,
     record_dispatch_path,
@@ -28,6 +28,18 @@ PARALLEL_THRESHOLD = 500_000
 
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
+
+
+def _wrap_expanding_result(result, numeric_cols, numeric_df, obj):
+    if len(numeric_cols) == obj.shape[1]:
+        return wrap_result_fast(result, numeric_df)
+    return wrap_result(
+        result,
+        numeric_df,
+        columns=numeric_cols,
+        merge_non_numeric=True,
+        original_df=obj,
+    )
 
 
 def _bounded_numba_expanding(kernel, arr, *args, cap=8):
@@ -1062,13 +1074,7 @@ def _make_expanding_wrapper(dispatch_func):
         arr = ensure_float64(numeric_df.values)
         result = dispatch_func(arr, min_periods)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_expanding_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1098,13 +1104,7 @@ def _make_expanding_std_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _expanding_std_dispatch(arr, min_periods, ddof)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_expanding_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1134,13 +1134,7 @@ def _make_expanding_var_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _expanding_var_dispatch(arr, min_periods, ddof)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_expanding_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 

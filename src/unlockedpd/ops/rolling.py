@@ -75,6 +75,23 @@ def _wrap_axis1_rolling_result(result_t: np.ndarray, obj: pd.DataFrame) -> pd.Da
     return wrap_result_fast(result_t.T, obj)
 
 
+def _wrap_axis0_rolling_result(
+    result: np.ndarray,
+    numeric_cols,
+    numeric_df: pd.DataFrame,
+    obj: pd.DataFrame,
+) -> pd.DataFrame:
+    if len(numeric_cols) == obj.shape[1]:
+        return wrap_result_fast(result, numeric_df)
+    return wrap_result(
+        result,
+        numeric_df,
+        columns=numeric_cols,
+        merge_non_numeric=True,
+        original_df=obj,
+    )
+
+
 def _bounded_numba_rolling(kernel, arr, *args, cap=8):
     """Run rolling prange kernels with a memory-bandwidth-aware thread cap."""
 
@@ -1754,13 +1771,7 @@ def _make_rolling_wrapper(numba_func, numba_func_centered=None, dispatch_func=No
         else:
             result = numba_func(arr, window, min_periods)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_axis0_rolling_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1804,13 +1815,7 @@ def _make_rolling_std_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_std_dispatch(arr, window, min_periods, ddof)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_axis0_rolling_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1854,13 +1859,7 @@ def _make_rolling_var_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_var_dispatch(arr, window, min_periods, ddof)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_axis0_rolling_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1902,13 +1901,7 @@ def _make_rolling_median_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_median_dispatch(arr, window, min_periods)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_axis0_rolling_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1952,13 +1945,7 @@ def _make_rolling_quantile_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_quantile_dispatch(arr, window, min_periods, quantile)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_axis0_rolling_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 
@@ -1998,13 +1985,7 @@ def _make_rolling_sem_wrapper():
         arr = ensure_float64(numeric_df.values)
         result = _rolling_sem_dispatch(arr, window, min_periods, ddof)
 
-        return wrap_result(
-            result,
-            numeric_df,
-            columns=numeric_cols,
-            merge_non_numeric=True,
-            original_df=obj,
-        )
+        return _wrap_axis0_rolling_result(result, numeric_cols, numeric_df, obj)
 
     return wrapper
 

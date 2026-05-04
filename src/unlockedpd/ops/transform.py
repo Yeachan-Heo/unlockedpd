@@ -47,39 +47,22 @@ def _call_original_dataframe_method(df: pd.DataFrame, method_name: str, *args, *
     return original(df, *args, **kwargs)
 
 
-def _pct_change_axis1_numpy(df: pd.DataFrame, periods: int) -> pd.DataFrame:
-    """Fast dense all-numeric pct_change(axis=1, fill_method=None)."""
+def _pct_change_axis1_primitives(
+    df: pd.DataFrame,
+    periods: int,
+    **shift_kwargs,
+) -> pd.DataFrame:
+    """Fast all-numeric pct_change(axis=1, fill_method=None) via pandas kernels."""
 
-    arr = ensure_float64(df.values)
-    n_cols = arr.shape[1]
-    result = np.empty(arr.shape, dtype=np.float64)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        if periods == 0:
-            np.divide(arr, arr, out=result)
-            result -= 1.0
-        elif periods > 0:
-            if periods >= n_cols:
-                result[:] = np.nan
-            else:
-                result[:, :periods] = np.nan
-                np.divide(arr[:, periods:], arr[:, :-periods], out=result[:, periods:])
-                result[:, periods:] -= 1.0
-        else:
-            abs_periods = -periods
-            if abs_periods >= n_cols:
-                result[:] = np.nan
-            else:
-                result[:, -abs_periods:] = np.nan
-                np.divide(
-                    arr[:, :-abs_periods],
-                    arr[:, abs_periods:],
-                    out=result[:, :-abs_periods],
-                )
-                result[:, :-abs_periods] -= 1.0
-
-    record_dispatch_path("numpy_vectorized")
-    return wrap_result_fast(result, df)
+    shifted = _call_original_dataframe_method(
+        df,
+        "shift",
+        periods=periods,
+        axis=1,
+        **shift_kwargs,
+    )
+    record_dispatch_path("pandas_primitives")
+    return df / shifted - 1.0
 
 
 # ============================================================================
@@ -547,8 +530,8 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
     axis_arg = kwargs.pop("axis", 0)
     axis = _normalize_axis(axis_arg)
     if axis == 1:
-        if fill_method is None and is_all_numeric(df):
-            return _pct_change_axis1_numpy(df, periods)
+        if fill_method is None and isinstance(periods, int) and is_all_numeric(df):
+            return _pct_change_axis1_primitives(df, periods, **kwargs)
         return _call_original_dataframe_method(
             df,
             "pct_change",
