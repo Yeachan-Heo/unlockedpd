@@ -72,11 +72,13 @@ def _apply_all_patches():
     from .ops.rolling import apply_rolling_patches
     from .ops.expanding import apply_expanding_patches
     from .ops.pairwise import apply_pairwise_patches
+
     # Transform operations: diff 1.0-1.7x, shift 1.0-1.5x, pct_change 11x
     apply_transform_patches()
 
     # DataFrame.transform() for element-wise ufuncs (abs, sqrt, exp, etc.)
     from .ops.dataframe_transform import apply_dataframe_transform_patches
+
     apply_dataframe_transform_patches()
 
     # Rank: axis=0 is 1.4x faster, axis=1 is 8-10x faster (row-parallel)
@@ -93,26 +95,32 @@ def _apply_all_patches():
 
     # Cumulative ops with nogil kernels
     from .ops.cumulative import apply_cumulative_patches
+
     apply_cumulative_patches()
 
     # EWM operations with nogil kernels
     from .ops.ewm import apply_ewm_patches
+
     apply_ewm_patches()
 
     # Aggregation operations (sum, mean, std, var, min, max, median, prod)
     from .ops.aggregations import apply_aggregation_patches
+
     apply_aggregation_patches()
 
     # DataFrame.agg() / aggregate() dispatching to optimized aggregations
     from .ops.agg import apply_agg_patches
+
     apply_agg_patches()
 
     # DataFrame.corr() / cov() - correlation and covariance matrices
     from .ops.dataframe_pairwise import apply_dataframe_pairwise_patches
+
     apply_dataframe_pairwise_patches()
 
     # fillna and dropna operations
     from .ops.fillna import apply_fillna_patches
+
     apply_fillna_patches()
 
 
@@ -120,6 +128,7 @@ def _warmup_all():
     """Pre-compile all Numba functions to avoid first-call overhead."""
     try:
         from ._warmup import warmup_all
+
         warmup_all()
     except Exception:
         # Silently fail - functions will compile on first use

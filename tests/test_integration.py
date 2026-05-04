@@ -1,4 +1,5 @@
 """Integration tests for unlockedpd."""
+
 import subprocess
 import sys
 
@@ -8,7 +9,7 @@ class TestImportPatching:
 
     def test_import_patches_automatically(self):
         """Verify that importing unlockedpd patches pandas methods."""
-        code = '''
+        code = """
 import pandas as pd
 original_mean = pd.core.window.rolling.Rolling.mean
 
@@ -20,14 +21,16 @@ assert original_mean is not patched_mean, "Method should be patched after import
 from unlockedpd._patch import is_patched
 assert is_patched(pd.core.window.rolling.Rolling, 'mean')
 print("PASS")
-'''
-        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
         assert result.returncode == 0, f"Test failed: {result.stderr}"
         assert "PASS" in result.stdout
 
     def test_import_warmup_is_lazy_by_default(self):
         """Verify default import patches pandas without loading warmup module."""
-        code = '''
+        code = """
 import sys
 import pandas as pd
 original_mean = pd.core.window.rolling.Rolling.mean
@@ -39,14 +42,16 @@ assert original_mean is not patched_mean, "Method should be patched after import
 assert unlockedpd.config.warmup == "lazy"
 assert "unlockedpd._warmup" not in sys.modules
 print("PASS")
-'''
-        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
         assert result.returncode == 0, f"Test failed: {result.stderr}"
         assert "PASS" in result.stdout
 
     def test_eager_import_policy_invokes_warmup(self):
         """Verify eager import policy invokes the warmup entrypoint."""
-        code = '''
+        code = """
 import os
 import sys
 import types
@@ -66,14 +71,16 @@ import unlockedpd
 assert unlockedpd.config.warmup == "eager"
 assert module.called is True
 print("PASS")
-'''
-        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
         assert result.returncode == 0, f"Test failed: {result.stderr}"
         assert "PASS" in result.stdout
 
     def test_unpatch_restores_original(self):
         """Verify unpatch_all restores original methods."""
-        code = '''
+        code = """
 import pandas as pd
 original_mean = pd.core.window.rolling.Rolling.mean
 
@@ -83,8 +90,10 @@ unlockedpd.unpatch_all()
 restored_mean = pd.core.window.rolling.Rolling.mean
 assert original_mean is restored_mean, "Method should be restored after unpatch_all"
 print("PASS")
-'''
-        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
         assert result.returncode == 0, f"Test failed: {result.stderr}"
         assert "PASS" in result.stdout
 
@@ -94,7 +103,7 @@ class TestConfigDisable:
 
     def test_config_enabled_false_uses_original(self):
         """Verify config.enabled=False bypasses optimization."""
-        code = '''
+        code = """
 import pandas as pd
 import numpy as np
 import unlockedpd
@@ -109,8 +118,10 @@ result2 = df.rolling(3).mean()
 
 pd.testing.assert_frame_equal(result1, result2)
 print("PASS")
-'''
-        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
         assert result.returncode == 0, f"Test failed: {result.stderr}"
         assert "PASS" in result.stdout
 
@@ -120,7 +131,7 @@ class TestFallback:
 
     def test_series_falls_back(self):
         """Verify Series operations fall back to pandas."""
-        code = '''
+        code = """
 import pandas as pd
 import numpy as np
 import unlockedpd
@@ -131,7 +142,9 @@ s = pd.Series(np.random.randn(100))
 result = s.rolling(5).mean()
 assert len(result) == 100
 print("PASS")
-'''
-        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
         assert result.returncode == 0, f"Test failed: {result.stderr}"
         assert "PASS" in result.stdout
