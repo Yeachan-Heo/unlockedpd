@@ -1,10 +1,16 @@
 # Resource profile results
 
-Latest broad run for the current code: `.omx/artifacts/broad-profile-with-large-transform-20260504T154000Z.json`.
+Latest broad run before the axis=0 cumulative pass: `.omx/artifacts/broad-profile-with-large-transform-20260504T154000Z.json`.
+
+Latest targeted axis=0 cumulative run for this pass: `.omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json`.
 
 Targeted runs for the newest high-risk changes:
 
 ```text
+.omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json
+.omx/artifacts/profile-cumulative-axis0-current-20260504T155529Z.json
+.omx/artifacts/profile-cumulative-axis0-threadpool-rowblock-20260504T161105Z.json
+.omx/artifacts/profile-cumulative-axis0-native-rowblock-20260504T161655Z.json
 .omx/artifacts/profile-cumulative-axis1-threadpool-numba-20260504T152000Z.json
 .omx/artifacts/profile-transform-axis1-large-256mb-20260504T153910Z.json
 .omx/artifacts/profile-transform-numba-fastmath-20260504T142318Z.json
@@ -19,6 +25,11 @@ Commands:
 PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
   benchmarks/profile_resources.py --repeats 5 \
   --output .omx/artifacts/broad-profile-with-large-transform-20260504T154000Z.json
+
+PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=1.2 poetry run python \
+  benchmarks/profile_resources.py --repeats 3 \
+  --case-filter 'cumulative-axis0-large-256mb' \
+  --output .omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json
 
 PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
   benchmarks/profile_resources.py --repeats 5 \
@@ -50,11 +61,11 @@ PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
 
 The current HPC resource budget follows the revised constraint: higher
 utilization is acceptable when it buys speed, while true leaks are not.  The
-profiler default is now:
+profiler default is now aligned with the stricter target:
 
 ```text
-optimized_cpu_ratio <= speedup * 2.0
-optimized_rss_ratio <= speedup * 2.0
+optimized_cpu_ratio <= speedup * 1.2
+optimized_rss_ratio <= speedup * 1.2
 ```
 
 Override with `UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR` for stricter or looser gates.
@@ -82,6 +93,11 @@ still reported separately.
   transient bounded ThreadPool + Numba `nogil` row chunks.  The cap scales with
   frame bytes, row count, and machine CPU count; workers join before return, so
   profiler `final_threads` stays at the pre-call baseline.
+- Dense finite `axis=0` cumulative `cumsum/cumprod/cummin/cummax` now use
+  row-contiguous Numba block scans with a size-aware 16/32 thread cap.  This
+  targets large column-wise cumulative cases that previously parallelized by
+  strided columns.  Non-finite frames stay on the existing pandas-compatible
+  safe path.
 - Dense mid-sized `axis=0` `DataFrame.sum/mean` retain the bounded OpenBLAS GEMV
   path with a size-aware thread cap and restore the previous OpenBLAS thread
   count afterwards.  A native-C row-block reducer was tested and rejected because
@@ -99,6 +115,10 @@ still reported separately.
 | transform-axis1-large-256mb | dataframe_diff | 2.032x | 3.653x | 1.000x | pass | parallel_numba |
 | transform-axis1-large-256mb | dataframe_shift | 22.596x | 0.044x | 0.004x | pass | pandas_native |
 | transform-axis1-large-256mb | dataframe_pct_change | 3.511x | 2.113x | 0.997x | pass | parallel_numba |
+| cumulative-axis0-large-256mb | dataframe_cumsum | 20.705x | 0.207x | 1.000x | pass | parallel_numba |
+| cumulative-axis0-large-256mb | dataframe_cumprod | 18.136x | 0.287x | 1.000x | pass | parallel_numba |
+| cumulative-axis0-large-256mb | dataframe_cummin | 108.049x | 0.124x | 1.000x | pass | parallel_numba |
+| cumulative-axis0-large-256mb | dataframe_cummax | 12.452x | 1.160x | 1.000x | pass | parallel_numba |
 | cumulative-axis1-wide-32mb | dataframe_cumsum | 22.478x | 0.097x | 1.003x | pass | threadpool |
 | cumulative-axis1-wide-32mb | dataframe_cumprod | 22.099x | 0.097x | 1.003x | pass | threadpool |
 | cumulative-axis1-wide-32mb | dataframe_cummin | 20.454x | 0.116x | 1.003x | pass | threadpool |
@@ -110,9 +130,8 @@ still reported separately.
 ## Latest broad profile summary
 
 The cumulative axis=1 rows now clear 20x in both the targeted and broad runs,
-and the broad matrix now includes an explicit 256MB axis=1 transform case.  All
-36 broad-profile rows pass the `speedup * 2.0` CPU/RAM gate, but universal 10x
-is still **not** proven: explicit 256MB transform `diff`/`pct_change`, 32MB
+and the broad matrix now includes an explicit 256MB axis=1 transform case.  All 36 rows in that pre-axis0 broad run passed the then-current
+`speedup * 2.0` CPU/RAM gate, but universal 10x was still **not** proven: explicit 256MB transform `diff`/`pct_change`, 32MB
 `pct_change`, 10MB `axis=0` sum/mean, and a few noisy broad rows remain below
 10x.
 
@@ -138,9 +157,10 @@ inside the speed-weighted resource budget.
 
 ## Remaining gap to the universal 10x objective
 
-Universal 10x is still **not achieved**.  The current code is resource-clean
-under the revised HPC budget and now has targeted >10x evidence for cumulative,
-rank, pairwise rolling, and some 32MB transform runs.  Remaining weak or noisy
+Universal 10x is still **not achieved**.  The current code is inside the
+speed-weighted CPU/RAM budget under targeted profiling and now has targeted
+>10x evidence for axis=0 large cumulative, axis=1 cumulative, rank, pairwise
+rolling, and some 32MB transform runs.  Remaining weak or noisy
 rows are:
 
 - 256MB `axis=1` transform `diff/pct_change`: explicit large-frame coverage now
@@ -148,15 +168,18 @@ rows are:
 - 10MB `axis=0` `sum/mean`: stable around 5-7x in subprocess profiling.  This is
   a sub-millisecond optimized path; native C row-block reduction was tested and
   rejected because it made the profiler slower.
-- `axis=1 pct_change(fill_method=None)`: targeted run reached 16x, but the broad
-  run can still drop below 10x when pandas' baseline is unusually low.
+- `axis=1 pct_change(fill_method=None)`: targeted run reached 16x, but broad
+  runs can still drop below 10x when pandas' baseline is unusually low.
 - `axis=1 diff`: targeted and previous broad runs cleared 10x, but the newest
   broad run dropped below 10x because pandas diff measured unusually fast.
+- 32MB axis=0 cumulative remains noisy and can fall below 10x in subprocess
+  means; the accepted target for this pass is the 256MB large-frame case.
 
 Rejected or bounded experiments include low-threshold axis=0 row-block dispatch,
 unbounded BLAS/dot dispatch, direct native-C axis=0 reduction, NumExpr,
-Bottleneck, Rust/Rayon prototypes, native C cumulative kernels, and default
-native-C axis=1 transform dispatch.  OpenMP native transform kernels were faster
+Bottleneck, Rust/Rayon prototypes, native C cumulative kernels, transient
+ThreadPool row-block axis=0 cumulative, and default native-C axis=1 transform
+dispatch.  OpenMP native transform kernels were faster
 in raw wall time but left extra worker threads alive after the call, so they are
 not accepted as resource-clean.  A transient ThreadPool+Numba `nogil` axis=1
 transform experiment was also rejected after

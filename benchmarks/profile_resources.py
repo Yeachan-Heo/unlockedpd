@@ -36,6 +36,7 @@ DEFAULT_CASES = (
     "aggregation-wide-10mb",
     "aggregation-medium-100mb",
     "aggregation-axis1-wide-32mb",
+    "cumulative-axis0-large-256mb",
     "cumulative-axis1-wide-32mb",
     "transform-axis1-wide-32mb",
     "transform-axis1-large-256mb",
@@ -181,6 +182,62 @@ def _case_matrix() -> List[CaseSpec]:
             "dataframe_max",
             (8192, 512),
             {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-wide-32mb",
+            "dataframe_cumsum",
+            (8192, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-wide-32mb",
+            "dataframe_cumprod",
+            (8192, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-wide-32mb",
+            "dataframe_cummin",
+            (8192, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-wide-32mb",
+            "dataframe_cummax",
+            (8192, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-large-256mb",
+            "dataframe_cumsum",
+            (65536, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-large-256mb",
+            "dataframe_cumprod",
+            (65536, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-large-256mb",
+            "dataframe_cummin",
+            (65536, 512),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis0-large-256mb",
+            "dataframe_cummax",
+            (65536, 512),
+            {"axis": 0},
             True,
         ),
         CaseSpec(
@@ -352,7 +409,7 @@ class _ThreadSampler:
 
 def _resource_config_snapshot() -> Dict[str, Any]:
     speedup_resource_factor = float(
-        os.environ.get("UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR", "2.0") or 2.0
+        os.environ.get("UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR", "1.2") or 1.2
     )
     try:
         import unlockedpd
@@ -420,12 +477,24 @@ def _library_versions() -> dict[str, Optional[str]]:
     return versions
 
 
-def _dataframe(shape: tuple[int, int], seed: int):
+def _dataframe(
+    shape: tuple[int, int],
+    seed: int,
+    operation: str = "",
+    params: Optional[Dict[str, Any]] = None,
+):
     import numpy as np
     import pandas as pd
 
     rng = np.random.default_rng(seed)
-    arr = rng.standard_normal(shape)
+    if operation == "dataframe_cumprod" and (params or {}).get("axis", 0) == 0:
+        # Long column-wise products over standard normal data overflow/underflow
+        # into a benchmark of floating-point extremes rather than cumulative
+        # traversal speed.  Keep values near one so large cumprod cases remain
+        # finite and comparable to the axis=1 cumprod correctness fixtures.
+        arr = rng.uniform(0.99, 1.01, size=shape)
+    else:
+        arr = rng.standard_normal(shape)
     return pd.DataFrame(arr, columns=[f"c{i}" for i in range(shape[1])])
 
 
@@ -456,7 +525,7 @@ def _run_operation(
     if shape is None:
         raise ValueError(f"shape required for {operation}")
     if df is None:
-        df = _dataframe(shape, seed)
+        df = _dataframe(shape, seed, operation, params)
 
     if implementation == "optimized":
         selected_path = _infer_selected_path(operation, shape)
@@ -619,7 +688,7 @@ def _worker_main(args: argparse.Namespace) -> int:
         # Input construction can dominate sub-10ms DataFrame reductions. Build
         # data outside the measured section so speedups reflect the operation
         # backend rather than random-number/DataFrame setup cost.
-        prepared_df = _dataframe(shape, args.worker_seed)
+        prepared_df = _dataframe(shape, args.worker_seed, operation, spec.get("params"))
 
     if mode == "warm" and implementation == "optimized":
         import unlockedpd

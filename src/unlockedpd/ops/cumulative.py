@@ -10,7 +10,7 @@ NumPy by enabling true parallel execution across multiple cores.
 
 import numpy as np
 import pandas as pd
-from numba import njit
+from numba import get_num_threads, njit, prange, set_num_threads
 from concurrent.futures import ThreadPoolExecutor
 from .._compat import (
     get_numeric_columns_fast,
@@ -37,6 +37,12 @@ AXIS1_CUMULATIVE_MEDIUM_FRAME_BYTES = 512 * 1024 * 1024
 AXIS1_CUMULATIVE_SMALL_THREAD_CAP = 16
 AXIS1_CUMULATIVE_LARGE_THREAD_CAP = 32
 AXIS1_CUMULATIVE_BYTES_PER_THREAD = 2 * 1024 * 1024
+AXIS0_CUMULATIVE_THRESHOLD = 500_000
+AXIS0_CUMULATIVE_THREAD_CAP = 32
+AXIS0_CUMULATIVE_MEDIUM_FRAME_BYTES = 128 * 1024 * 1024
+AXIS0_CUMULATIVE_SMALL_THREAD_CAP = 16
+AXIS0_CUMULATIVE_LARGE_THREAD_CAP = 32
+AXIS0_CUMULATIVE_BYTES_PER_THREAD = 2 * 1024 * 1024
 
 
 def _axis1_cumulative_thread_cap(arr: np.ndarray) -> int:
@@ -59,6 +65,29 @@ def _axis1_cumulative_thread_cap(arr: np.ndarray) -> int:
     return max(
         1,
         min(size_cap, operation_cap, AXIS1_CUMULATIVE_THREAD_CAP, arr.shape[0]),
+    )
+
+
+def _axis0_cumulative_thread_cap(arr: np.ndarray) -> int:
+    """Return a size-aware cap for row-block axis=0 cumulative workers."""
+
+    nbytes = int(getattr(arr, "nbytes", 0))
+    if nbytes <= 0:
+        return 1
+
+    size_cap = max(
+        1,
+        (nbytes + AXIS0_CUMULATIVE_BYTES_PER_THREAD - 1)
+        // AXIS0_CUMULATIVE_BYTES_PER_THREAD,
+    )
+    operation_cap = (
+        AXIS0_CUMULATIVE_SMALL_THREAD_CAP
+        if nbytes < AXIS0_CUMULATIVE_MEDIUM_FRAME_BYTES
+        else AXIS0_CUMULATIVE_LARGE_THREAD_CAP
+    )
+    return max(
+        1,
+        min(size_cap, operation_cap, AXIS0_CUMULATIVE_THREAD_CAP, arr.shape[0]),
     )
 
 
@@ -98,6 +127,32 @@ def _bounded_axis1_cumulative(kernel, arr: np.ndarray) -> np.ndarray:
         list(executor.map(process_chunk, chunks))
 
     return result
+
+
+def _bounded_axis0_cumulative(kernel, arr: np.ndarray) -> np.ndarray:
+    """Run dense finite row-block cumulative kernels with bounded Numba threads."""
+
+    from .._config import config
+
+    thread_cap = _axis0_cumulative_thread_cap(arr)
+    configured = config.num_threads
+    target_threads = (
+        min(configured, thread_cap)
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="cumulative",
+            operation_cap=thread_cap,
+            memory_bandwidth_cap=thread_cap,
+            cap=thread_cap,
+        )
+    )
+    target_threads = max(1, min(int(target_threads), arr.shape[0]))
+
+    record_dispatch_path("parallel_numba" if target_threads > 1 else "serial_numba")
+    if target_threads != get_num_threads():
+        set_num_threads(target_threads)
+    return kernel(arr, target_threads)
 
 
 # ============================================================================
@@ -296,6 +351,207 @@ def _normalize_axis(axis) -> int:
     raise ValueError(f"No axis named {axis!r}")
 
 
+@njit(parallel=True, nogil=True, cache=True)
+def _cumsum_axis0_finite_blocks(arr, blocks):
+    """Dense finite cumsum(axis=0) using row-contiguous block scans."""
+
+    n_rows, n_cols = arr.shape
+    result = np.empty_like(arr)
+    block_offsets = np.zeros((blocks, n_cols), dtype=np.float64)
+
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        totals = np.zeros(n_cols, dtype=np.float64)
+        for row in range(start, end):
+            for col in range(n_cols):
+                totals[col] += arr[row, col]
+                result[row, col] = totals[col]
+        for col in range(n_cols):
+            block_offsets[block, col] = totals[col]
+
+    running = np.zeros(n_cols, dtype=np.float64)
+    for block in range(blocks):
+        for col in range(n_cols):
+            block_total = block_offsets[block, col]
+            block_offsets[block, col] = running[col]
+            running[col] += block_total
+
+    for block in prange(1, blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        for row in range(start, end):
+            for col in range(n_cols):
+                result[row, col] += block_offsets[block, col]
+
+    return result
+
+
+@njit(parallel=True, nogil=True, cache=True)
+def _cumprod_axis0_finite_blocks(arr, blocks):
+    """Dense finite cumprod(axis=0) using row-contiguous block scans."""
+
+    n_rows, n_cols = arr.shape
+    result = np.empty_like(arr)
+    block_offsets = np.ones((blocks, n_cols), dtype=np.float64)
+
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        totals = np.ones(n_cols, dtype=np.float64)
+        for row in range(start, end):
+            for col in range(n_cols):
+                totals[col] *= arr[row, col]
+                result[row, col] = totals[col]
+        for col in range(n_cols):
+            block_offsets[block, col] = totals[col]
+
+    running = np.ones(n_cols, dtype=np.float64)
+    for block in range(blocks):
+        for col in range(n_cols):
+            block_total = block_offsets[block, col]
+            block_offsets[block, col] = running[col]
+            running[col] *= block_total
+
+    for block in prange(1, blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        for row in range(start, end):
+            for col in range(n_cols):
+                result[row, col] *= block_offsets[block, col]
+
+    return result
+
+
+@njit(parallel=True, nogil=True, cache=True)
+def _cummin_axis0_finite_blocks(arr, blocks):
+    """Dense finite cummin(axis=0) using row-contiguous block scans."""
+
+    n_rows, n_cols = arr.shape
+    result = np.empty_like(arr)
+    block_offsets = np.empty((blocks, n_cols), dtype=np.float64)
+
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        totals = np.empty(n_cols, dtype=np.float64)
+        for col in range(n_cols):
+            totals[col] = np.inf
+        for row in range(start, end):
+            for col in range(n_cols):
+                value = arr[row, col]
+                if value < totals[col]:
+                    totals[col] = value
+                result[row, col] = totals[col]
+        for col in range(n_cols):
+            block_offsets[block, col] = totals[col]
+
+    running = np.empty(n_cols, dtype=np.float64)
+    for col in range(n_cols):
+        running[col] = np.inf
+    for block in range(blocks):
+        for col in range(n_cols):
+            block_total = block_offsets[block, col]
+            block_offsets[block, col] = running[col]
+            if block_total < running[col]:
+                running[col] = block_total
+
+    for block in prange(1, blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        for row in range(start, end):
+            for col in range(n_cols):
+                offset = block_offsets[block, col]
+                if offset < result[row, col]:
+                    result[row, col] = offset
+
+    return result
+
+
+@njit(parallel=True, nogil=True, cache=True)
+def _cummax_axis0_finite_blocks(arr, blocks):
+    """Dense finite cummax(axis=0) using row-contiguous block scans."""
+
+    n_rows, n_cols = arr.shape
+    result = np.empty_like(arr)
+    block_offsets = np.empty((blocks, n_cols), dtype=np.float64)
+
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        totals = np.empty(n_cols, dtype=np.float64)
+        for col in range(n_cols):
+            totals[col] = -np.inf
+        for row in range(start, end):
+            for col in range(n_cols):
+                value = arr[row, col]
+                if value > totals[col]:
+                    totals[col] = value
+                result[row, col] = totals[col]
+        for col in range(n_cols):
+            block_offsets[block, col] = totals[col]
+
+    running = np.empty(n_cols, dtype=np.float64)
+    for col in range(n_cols):
+        running[col] = -np.inf
+    for block in range(blocks):
+        for col in range(n_cols):
+            block_total = block_offsets[block, col]
+            block_offsets[block, col] = running[col]
+            if block_total > running[col]:
+                running[col] = block_total
+
+    for block in prange(1, blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        for row in range(start, end):
+            for col in range(n_cols):
+                offset = block_offsets[block, col]
+                if offset > result[row, col]:
+                    result[row, col] = offset
+
+    return result
+
+
+def _axis0_numba_cumulative(arr: np.ndarray, op: str) -> np.ndarray | None:
+    """Return a dense finite column-wise cumulative result, or ``None``."""
+
+    if (
+        arr.dtype != np.float64
+        or arr.size < AXIS0_CUMULATIVE_THRESHOLD
+        or arr.shape[0] == 0
+        or arr.shape[1] == 0
+        or not arr.flags.c_contiguous
+    ):
+        return None
+
+    # The row-block kernels use associative block prefixes to exploit the
+    # row-major DataFrame buffer.  Keep exact pandas/NumPy edge behavior for
+    # NaN/inf inputs by leaving non-finite frames on the existing safe path.
+    if not np.isfinite(arr).all():
+        return None
+
+    assert_memory_budget(
+        simple_result_memory_estimate(
+            arr.shape[0],
+            arr.shape[1],
+            dtype=arr.dtype,
+            intermediates=0,
+        ),
+        operation="cumulative",
+    )
+
+    if op == "cumsum":
+        return _bounded_axis0_cumulative(_cumsum_axis0_finite_blocks, arr)
+    if op == "cumprod":
+        return _bounded_axis0_cumulative(_cumprod_axis0_finite_blocks, arr)
+    if op == "cummin":
+        return _bounded_axis0_cumulative(_cummin_axis0_finite_blocks, arr)
+    if op == "cummax":
+        return _bounded_axis0_cumulative(_cummax_axis0_finite_blocks, arr)
+    return None
+
+
 @njit(nogil=True, fastmath=True, cache=True)
 def _cumsum_axis1_finite_chunk(arr, result, start_row, end_row):
     """Dense finite cumsum(axis=1) over contiguous rows."""
@@ -464,15 +720,17 @@ def optimized_cumsum(df, axis=0, skipna=True, *args, **kwargs):
 
     arr = ensure_float64(numeric_df.values)
 
-    if _should_use_parallel(arr):
+    result = _axis0_numba_cumulative(arr, "cumsum")
+    if result is None:
+        if not _should_use_parallel(arr):
+            # Fall back to pandas for small DataFrames
+            raise TypeError("Use pandas for small DataFrames")
+
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="cumulative",
         )
         result = _cumsum_parallel(arr, skipna)
-    else:
-        # Fall back to pandas for small DataFrames
-        raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
         result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
@@ -499,14 +757,16 @@ def optimized_cumprod(df, axis=0, skipna=True, *args, **kwargs):
 
     arr = ensure_float64(numeric_df.values)
 
-    if _should_use_parallel(arr):
+    result = _axis0_numba_cumulative(arr, "cumprod")
+    if result is None:
+        if not _should_use_parallel(arr):
+            raise TypeError("Use pandas for small DataFrames")
+
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="cumulative",
         )
         result = _cumprod_parallel(arr, skipna)
-    else:
-        raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
         result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
@@ -533,14 +793,16 @@ def optimized_cummin(df, axis=0, skipna=True, *args, **kwargs):
 
     arr = ensure_float64(numeric_df.values)
 
-    if _should_use_parallel(arr):
+    result = _axis0_numba_cumulative(arr, "cummin")
+    if result is None:
+        if not _should_use_parallel(arr):
+            raise TypeError("Use pandas for small DataFrames")
+
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="cumulative",
         )
         result = _cummin_parallel(arr, skipna)
-    else:
-        raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
         result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
@@ -567,14 +829,16 @@ def optimized_cummax(df, axis=0, skipna=True, *args, **kwargs):
 
     arr = ensure_float64(numeric_df.values)
 
-    if _should_use_parallel(arr):
+    result = _axis0_numba_cumulative(arr, "cummax")
+    if result is None:
+        if not _should_use_parallel(arr):
+            raise TypeError("Use pandas for small DataFrames")
+
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="cumulative",
         )
         result = _cummax_parallel(arr, skipna)
-    else:
-        raise TypeError("Use pandas for small DataFrames")
 
     return wrap_result(
         result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
