@@ -255,6 +255,77 @@ def test_profile_comparison_fails_mismatched_case_matrix(tmp_path):
     assert any("absent from baseline" in issue.message for issue in result.issues)
 
 
+def test_profile_comparison_accepts_high_overhead_when_improved_from_baseline(tmp_path):
+    baseline_path = _write_json(
+        tmp_path / "baseline.json",
+        _profile(
+            _case(
+                "expanding-wide-10mb",
+                "expanding_mean",
+                speedup=0.2,
+                cpu_ratio=80.0,
+                rss_ratio=3.0,
+            )
+        ),
+    )
+    after_path = _write_json(
+        tmp_path / "after.json",
+        _profile(
+            _case(
+                "expanding-wide-10mb",
+                "expanding_mean",
+                speedup=0.5,
+                cpu_ratio=4.5,
+                rss_ratio=3.0,
+            )
+        ),
+    )
+
+    result = compare_profiles(baseline_path, after_path)
+
+    assert result.passed
+    assert result.high_overhead_rows[0]["pass_speedup_gate"] is False
+    assert result.high_overhead_rows[0]["pass_baseline_improvement_gate"] is True
+
+
+def test_profile_comparison_fails_high_overhead_without_speedup_or_baseline_improvement(
+    tmp_path,
+):
+    baseline_path = _write_json(
+        tmp_path / "baseline.json",
+        _profile(
+            _case(
+                "expanding-wide-10mb",
+                "expanding_mean",
+                speedup=2.0,
+                cpu_ratio=3.0,
+                rss_ratio=2.0,
+            )
+        ),
+    )
+    after_path = _write_json(
+        tmp_path / "after.json",
+        _profile(
+            _case(
+                "expanding-wide-10mb",
+                "expanding_mean",
+                speedup=0.5,
+                cpu_ratio=4.5,
+                rss_ratio=3.0,
+            )
+        ),
+    )
+
+    result = compare_profiles(baseline_path, after_path)
+
+    assert not result.passed
+    assert result.high_overhead_rows[0]["pass_speedup_gate"] is False
+    assert result.high_overhead_rows[0]["pass_baseline_improvement_gate"] is False
+    assert any(
+        "improvement from a >6x baseline" in issue.message for issue in result.issues
+    )
+
+
 def test_profile_comparison_fails_unjustified_excessive_overhead(tmp_path):
     baseline_path = _write_json(
         tmp_path / "baseline.json",

@@ -385,11 +385,19 @@ def _compare_case_matrix(
 
 def _evaluate_after_cases(
     result: ComparisonResult,
+    baseline_cases: dict[CaseKey, dict[str, Any]],
     after_cases: dict[CaseKey, dict[str, Any]],
 ) -> None:
     for key, case in sorted(after_cases.items()):
         rss_ratio, cpu_ratio, speedup = _case_ratios(case)
         max_ratio = max(rss_ratio, cpu_ratio)
+        baseline_case = baseline_cases.get(key)
+        baseline_max_ratio = None
+        if baseline_case is not None:
+            baseline_rss_ratio, baseline_cpu_ratio, _baseline_speedup = _case_ratios(
+                baseline_case
+            )
+            baseline_max_ratio = max(baseline_rss_ratio, baseline_cpu_ratio)
         selected_path = _summary_path(case)
         fallback_reason = _fallback_reason(case)
         uses_fallback = _uses_fallback(case)
@@ -401,6 +409,9 @@ def _evaluate_after_cases(
             "cpu_seconds_ratio": cpu_ratio,
             "speedup": speedup,
             "selected_path": selected_path,
+            "baseline_max_ratio": ""
+            if baseline_max_ratio is None
+            else baseline_max_ratio,
             "reason": fallback_reason,
         }
 
@@ -436,13 +447,23 @@ def _evaluate_after_cases(
         elif max_ratio > HIGH_OVERHEAD_FLOOR:
             high_row = dict(row)
             high_row["pass_speedup_gate"] = speedup >= MIN_HIGH_OVERHEAD_SPEEDUP
+            high_row["pass_baseline_improvement_gate"] = bool(
+                baseline_max_ratio is not None
+                and baseline_max_ratio > MAX_ACCEPTABLE_OVERHEAD
+                and max_ratio <= MAX_ACCEPTABLE_OVERHEAD
+                and max_ratio < baseline_max_ratio
+            )
             result.high_overhead_rows.append(high_row)
-            if not high_row["pass_speedup_gate"]:
+            if not (
+                high_row["pass_speedup_gate"]
+                or high_row["pass_baseline_improvement_gate"]
+            ):
                 result.issues.append(
                     ComparisonIssue(
                         "FAIL",
                         f"{key.label()} is in the 4-6x overhead band without "
-                        f">={MIN_HIGH_OVERHEAD_SPEEDUP:g}x speedup",
+                        f">={MIN_HIGH_OVERHEAD_SPEEDUP:g}x speedup or "
+                        "improvement from a >6x baseline into budget",
                     )
                 )
 
@@ -555,7 +576,7 @@ def compare_profiles(
     baseline_cases = _case_map(baseline)
     after_cases = _case_map(after)
     _compare_case_matrix(result, baseline_cases, after_cases)
-    _evaluate_after_cases(result, after_cases)
+    _evaluate_after_cases(result, baseline_cases, after_cases)
     check_runtime_dependencies(result, pyproject_path)
     return result
 
@@ -616,7 +637,9 @@ def render_markdown_report(result: ComparisonResult) -> str:
                 "cpu_seconds_ratio",
                 "speedup",
                 "selected_path",
+                "baseline_max_ratio",
                 "pass_speedup_gate",
+                "pass_baseline_improvement_gate",
                 "reason",
             ],
             result.high_overhead_rows,
