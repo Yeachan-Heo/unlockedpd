@@ -123,9 +123,10 @@ class UnlockedConfig:
     @num_threads.setter
     def num_threads(self, value: int) -> None:
         with self._lock:
-            self._num_threads = int(value)
-            if value > 0:
-                numba.set_num_threads(value)
+            parsed = int(value)
+            self._num_threads = parsed
+            if parsed > 0:
+                numba.set_num_threads(parsed)
 
     @property
     def threadpool_workers(self) -> int:
