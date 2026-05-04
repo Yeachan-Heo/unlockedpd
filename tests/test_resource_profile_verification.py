@@ -76,6 +76,44 @@ def _case(
     }
 
 
+def _harness_case(
+    case_id: str = "rolling-wide-10mb",
+    operation: str = "rolling_mean",
+    *,
+    selected_path_optimized: str | list[str] = "threadpool",
+    selected_path: str = "threadpool",
+    speedup: float = 4.5,
+    cpu_ratio: float = 2.0,
+    rss_ratio: float = 2.0,
+) -> dict:
+    """Return a case shaped like benchmarks/profile_resources.py output."""
+
+    return {
+        "case_id": case_id,
+        "operation": operation,
+        "shape": [128, 64],
+        "params": {"window": 20},
+        "parallelism_gate": True,
+        "seed": 12345,
+        "mode": "warm",
+        "repeats": [
+            _repeat("pandas", "pandas"),
+            _repeat("optimized", selected_path),
+        ],
+        "summary": {
+            "pandas_wall_seconds": 4.5,
+            "optimized_wall_seconds": 1.0,
+            "speedup": speedup,
+            "cpu_seconds_ratio": cpu_ratio,
+            "rss_ratio": rss_ratio,
+            "selected_path_optimized": selected_path_optimized,
+            "pass_resource_budget": True,
+            "pass_parallelism_gate": True,
+            "fallback_reason": None,
+        },
+    }
+
+
 def _profile(*cases: dict) -> dict:
     return {
         "schema_version": "resource-profile-v1",
@@ -172,6 +210,23 @@ dependencies = [
             "pass": True,
         }
     ]
+
+
+def test_profile_comparison_accepts_harness_selected_path_string(tmp_path):
+    baseline_path = _write_json(
+        tmp_path / "baseline.json",
+        _profile(_harness_case(speedup=2.0)),
+    )
+    after_path = _write_json(
+        tmp_path / "after.json",
+        _profile(_harness_case(selected_path_optimized="threadpool", speedup=4.5)),
+    )
+
+    result = compare_profiles(baseline_path, after_path)
+
+    assert result.passed
+    assert result.named_parallelism_rows[0]["selected_path"] == "threadpool"
+    assert result.named_parallelism_rows[0]["pass_parallelism_gate"] is True
 
 
 def test_profile_comparison_fails_mismatched_case_matrix(tmp_path):

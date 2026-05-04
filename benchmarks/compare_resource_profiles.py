@@ -272,13 +272,11 @@ def _bool_value(value: Any, default: bool = False) -> bool:
 
 def _summary_path(case: dict[str, Any]) -> str:
     summary = case.get("summary", {})
-    for field_name in (
-        "selected_path",
-        "optimized_path",
-        "selected_path_optimized_name",
-    ):
+    for field_name in ("selected_path", "optimized_path", "selected_path_optimized"):
         value = summary.get(field_name)
         if value:
+            if isinstance(value, list):
+                return ",".join(str(item) for item in value)
             return str(value)
 
     optimized_repeats = [
@@ -310,15 +308,18 @@ def _uses_fallback(case: dict[str, Any]) -> bool:
     path = _summary_path(case).lower()
     if path in FALLBACK_PATHS:
         return True
+    if path != "unknown":
+        return False
+
     summary = case.get("summary", {})
     return not _bool_value(summary.get("selected_path_optimized"), default=False)
 
 
 def _uses_parallel_path(case: dict[str, Any]) -> bool:
     path = _summary_path(case).lower()
-    return path in PARALLEL_PATHS or (
-        _bool_value(case.get("summary", {}).get("selected_path_optimized"))
-        and "parallel" in path
+    path_parts = {part.strip() for part in path.split(",") if part.strip()}
+    return bool(path_parts & PARALLEL_PATHS) or any(
+        "parallel" in part for part in path_parts
     )
 
 
