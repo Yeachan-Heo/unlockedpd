@@ -238,6 +238,38 @@ def test_profile_comparison_accepts_harness_selected_path_string(tmp_path):
     assert result.named_parallelism_rows[0]["pass_parallelism_gate"] is True
 
 
+def test_profile_comparison_accepts_numpy_vectorized_optimized_path(tmp_path):
+    baseline_path = _write_json(
+        tmp_path / "baseline.json",
+        _profile(
+            _harness_case(
+                case_id="aggregation-axis1-wide-32mb",
+                operation="dataframe_sum",
+                selected_path_optimized="parallel_numba",
+                speedup=1.0,
+            )
+        ),
+    )
+    after_path = _write_json(
+        tmp_path / "after.json",
+        _profile(
+            _harness_case(
+                case_id="aggregation-axis1-wide-32mb",
+                operation="dataframe_sum",
+                selected_path_optimized="numpy_vectorized",
+                selected_path="numpy_vectorized",
+                speedup=2.0,
+            )
+        ),
+    )
+
+    result = compare_profiles(baseline_path, after_path)
+
+    assert result.passed
+    assert result.named_parallelism_rows[0]["selected_path"] == "numpy_vectorized"
+    assert result.named_parallelism_rows[0]["pass_parallelism_gate"] is True
+
+
 def test_profile_comparison_fails_mismatched_case_matrix(tmp_path):
     baseline_path = _write_json(
         tmp_path / "baseline.json",

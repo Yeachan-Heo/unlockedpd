@@ -11,11 +11,13 @@ Operations support axis parameter:
 
 import numpy as np
 import pandas as pd
-from numba import njit, prange
+from numba import get_num_threads, njit, prange, set_num_threads
 from concurrent.futures import ThreadPoolExecutor
 from .._compat import get_numeric_columns_fast, ensure_float64
 from .._resources import (
     assert_memory_budget,
+    record_dispatch_path,
+    resolve_threadpool_workers,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -23,6 +25,270 @@ from .._resources import (
 # Thresholds for parallel execution dispatch
 PARALLEL_THRESHOLD = 500_000  # Use parallel prange above this
 THREADPOOL_THRESHOLD = 10_000_000  # Use ThreadPool+nogil above this
+
+
+def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
+    """Use NumPy's vectorized reducer when it is correct for pandas semantics.
+
+    Pandas is already very good for dense numeric reductions, but the older
+    Numba dispatch paid heavy Python/ThreadPool and NaN-branch costs for simple
+    reducers.  For ``skipna=False`` NumPy's normal reducers match pandas NaN
+    propagation.  For ``skipna=True`` we can use the same fast reducers only
+    after proving the array has no NaNs.
+    """
+
+    if skipna and np.isnan(arr).any():
+        return None
+
+    record_dispatch_path("numpy_vectorized")
+    if op == "sum":
+        return np.sum(arr, axis=axis)
+    if op == "mean":
+        return np.mean(arr, axis=axis)
+    if op == "min":
+        return np.min(arr, axis=axis)
+    if op == "max":
+        return np.max(arr, axis=axis)
+    if op == "prod":
+        return np.prod(arr, axis=axis)
+    if op == "var":
+        return np.var(arr, axis=axis, ddof=ddof)
+    if op == "std":
+        return np.std(arr, axis=axis, ddof=ddof)
+    return None
+
+
+def _bounded_numba_axis1(kernel, arr, *args):
+    """Run row-parallel Numba kernels with a memory-bandwidth-aware thread cap."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        configured
+        if configured > 0
+        else resolve_threadpool_workers(arr.shape[0], operation="aggregation")
+    )
+    current_threads = get_num_threads()
+    # Never raise the active Numba thread count implicitly; only cap it to avoid
+    # CPU oversubscription on memory-bound row reductions.
+    target_threads = max(1, min(int(target_threads), int(current_threads)))
+
+    if target_threads == current_threads:
+        return kernel(arr, *args)
+
+    set_num_threads(target_threads)
+    try:
+        return kernel(arr, *args)
+    finally:
+        set_num_threads(current_threads)
+
+
+# ============================================================================
+# Direct row-wise kernels for axis=1 reductions
+# ============================================================================
+
+
+@njit(parallel=True, cache=True)
+def _sum_axis1_parallel(arr, skipna):
+    """Parallel sum reduction along axis=1 using contiguous row scans."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        total = 0.0
+        count = 0
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    total = np.nan
+                    count = 1
+                    break
+            else:
+                total += val
+                count += 1
+        result[row] = total if count > 0 or not skipna else 0.0
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _mean_axis1_parallel(arr, skipna):
+    """Parallel mean reduction along axis=1 using contiguous row scans."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        total = 0.0
+        count = 0
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    total = np.nan
+                    count = 1
+                    break
+            else:
+                total += val
+                count += 1
+        result[row] = total / count if count > 0 else np.nan
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _var_axis1_parallel(arr, skipna, ddof):
+    """Parallel variance reduction along axis=1 using Welford's algorithm."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        mean = 0.0
+        M2 = 0.0
+        count = 0
+        nan_found = False
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    nan_found = True
+                    break
+            else:
+                count += 1
+                delta = val - mean
+                mean += delta / count
+                delta2 = val - mean
+                M2 += delta * delta2
+
+        if nan_found:
+            result[row] = np.nan
+        elif count > ddof:
+            result[row] = M2 / (count - ddof)
+        else:
+            result[row] = np.nan
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _std_axis1_parallel(arr, skipna, ddof):
+    """Parallel std reduction along axis=1 using Welford's algorithm."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        mean = 0.0
+        M2 = 0.0
+        count = 0
+        nan_found = False
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    nan_found = True
+                    break
+            else:
+                count += 1
+                delta = val - mean
+                mean += delta / count
+                delta2 = val - mean
+                M2 += delta * delta2
+
+        if nan_found:
+            result[row] = np.nan
+        elif count > ddof:
+            result[row] = np.sqrt(M2 / (count - ddof))
+        else:
+            result[row] = np.nan
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _min_axis1_parallel(arr, skipna):
+    """Parallel min reduction along axis=1 using contiguous row scans."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        min_val = np.inf
+        count = 0
+        nan_found = False
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    nan_found = True
+                    break
+            else:
+                if val < min_val:
+                    min_val = val
+                count += 1
+
+        if nan_found or count == 0:
+            result[row] = np.nan
+        else:
+            result[row] = min_val
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _max_axis1_parallel(arr, skipna):
+    """Parallel max reduction along axis=1 using contiguous row scans."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        max_val = -np.inf
+        count = 0
+        nan_found = False
+
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    nan_found = True
+                    break
+            else:
+                if val > max_val:
+                    max_val = val
+                count += 1
+
+        if nan_found or count == 0:
+            result[row] = np.nan
+        else:
+            result[row] = max_val
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _prod_axis1_parallel(arr, skipna):
+    """Parallel product reduction along axis=1 using contiguous row scans."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        prod = 1.0
+        count = 0
+        for col in range(n_cols):
+            val = arr[row, col]
+            if np.isnan(val):
+                if not skipna:
+                    prod = np.nan
+                    count = 1
+                    break
+            else:
+                prod *= val
+                count += 1
+        result[row] = prod if count > 0 or not skipna else 1.0
+
+    return result
 
 
 # ============================================================================
@@ -125,7 +391,17 @@ def _sum_threadpool(arr, skipna):
 def _sum_dispatch(arr, skipna, axis):
     """Dispatch sum to appropriate implementation based on size."""
     if axis == 1:
+        fast = _numpy_no_missing_reduction(arr, "sum", 1, skipna)
+        if fast is not None:
+            return fast
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_sum_axis1_parallel, arr, skipna)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "sum", 0, skipna)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
@@ -236,7 +512,17 @@ def _mean_threadpool(arr, skipna):
 def _mean_dispatch(arr, skipna, axis):
     """Dispatch mean to appropriate implementation based on size."""
     if axis == 1:
+        fast = _numpy_no_missing_reduction(arr, "mean", 1, skipna)
+        if fast is not None:
+            return fast
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_mean_axis1_parallel, arr, skipna)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "mean", 0, skipna)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
@@ -380,7 +666,14 @@ def _var_threadpool(arr, skipna, ddof):
 def _var_dispatch(arr, skipna, axis, ddof):
     """Dispatch variance to appropriate implementation based on size."""
     if axis == 1:
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_var_axis1_parallel, arr, skipna, ddof)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "var", 0, skipna, ddof)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
@@ -491,7 +784,14 @@ def _std_threadpool(arr, skipna, ddof):
 def _std_dispatch(arr, skipna, axis, ddof):
     """Dispatch std to appropriate implementation based on size."""
     if axis == 1:
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_std_axis1_parallel, arr, skipna, ddof)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "std", 0, skipna, ddof)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
@@ -626,7 +926,17 @@ def _min_threadpool(arr, skipna):
 def _min_dispatch(arr, skipna, axis):
     """Dispatch min to appropriate implementation based on size."""
     if axis == 1:
+        fast = _numpy_no_missing_reduction(arr, "min", 1, skipna)
+        if fast is not None:
+            return fast
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_min_axis1_parallel, arr, skipna)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "min", 0, skipna)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
@@ -761,7 +1071,17 @@ def _max_threadpool(arr, skipna):
 def _max_dispatch(arr, skipna, axis):
     """Dispatch max to appropriate implementation based on size."""
     if axis == 1:
+        fast = _numpy_no_missing_reduction(arr, "max", 1, skipna)
+        if fast is not None:
+            return fast
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_max_axis1_parallel, arr, skipna)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "max", 0, skipna)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
@@ -912,6 +1232,10 @@ def _median_threadpool(arr, skipna):
 
 def _median_dispatch(arr, skipna, axis):
     """Dispatch median to appropriate implementation based on size."""
+    if not (skipna and np.isnan(arr).any()):
+        record_dispatch_path("numpy_vectorized")
+        return np.median(arr, axis=axis)
+
     if axis == 1:
         arr = arr.T
 
@@ -1039,7 +1363,17 @@ def _prod_threadpool(arr, skipna):
 def _prod_dispatch(arr, skipna, axis):
     """Dispatch prod to appropriate implementation based on size."""
     if axis == 1:
+        fast = _numpy_no_missing_reduction(arr, "prod", 1, skipna)
+        if fast is not None:
+            return fast
+        if arr.size >= PARALLEL_THRESHOLD:
+            record_dispatch_path("parallel_numba")
+            return _bounded_numba_axis1(_prod_axis1_parallel, arr, skipna)
         arr = arr.T
+    else:
+        fast = _numpy_no_missing_reduction(arr, "prod", 0, skipna)
+        if fast is not None:
+            return fast
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:

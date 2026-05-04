@@ -3,24 +3,54 @@
 This module provides Numba-accelerated ranking operations
 that parallelize across rows (axis=1) or columns (axis=0).
 """
-import numpy as np
-from numba import njit, prange
-import pandas as pd
-from typing import Union
 
-from .._compat import get_numeric_columns, wrap_result, ensure_float64, ensure_optimal_layout
+import numpy as np
+from numba import get_num_threads, njit, prange, set_num_threads
+import pandas as pd
+
+from .._compat import (
+    get_numeric_columns,
+    wrap_result,
+    ensure_float64,
+    ensure_optimal_layout,
+)
+from .._resources import resolve_threadpool_workers
 
 
 # na_option encoding: 0='keep', 1='top', 2='bottom'
-NA_OPTION_MAP = {'keep': 0, 'top': 1, 'bottom': 2}
+NA_OPTION_MAP = {"keep": 0, "top": 1, "bottom": 2}
 
 # Threshold for parallel vs serial execution
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
 PARALLEL_THRESHOLD = 500_000
 
 
+def _bounded_numba_rank(kernel, arr, *args):
+    """Run rank kernels with a conservative cap for memory/sort pressure."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        configured
+        if configured > 0
+        else resolve_threadpool_workers(arr.shape[0], operation="rank")
+    )
+    current_threads = get_num_threads()
+    target_threads = max(1, min(int(target_threads), int(current_threads)))
+    if target_threads == current_threads:
+        return kernel(arr, *args)
+    set_num_threads(target_threads)
+    try:
+        return kernel(arr, *args)
+    finally:
+        set_num_threads(current_threads)
+
+
 @njit(cache=True)
-def _apply_na_option(ranks: np.ndarray, is_nan: np.ndarray, na_option: int) -> np.ndarray:
+def _apply_na_option(
+    ranks: np.ndarray, is_nan: np.ndarray, na_option: int
+) -> np.ndarray:
     """Apply na_option to ranks array.
 
     na_option encoding: 0='keep', 1='top', 2='bottom'
@@ -60,8 +90,11 @@ def _apply_na_option(ranks: np.ndarray, is_nan: np.ndarray, na_option: int) -> n
 # Parallel implementations (for large arrays)
 # =============================================================================
 
+
 @njit(parallel=True, cache=True)
-def _rank_axis1_average(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_average(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 (across columns) using average method."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -119,7 +152,46 @@ def _rank_axis1_average(arr: np.ndarray, ascending: bool = True, na_option: int 
 
 
 @njit(parallel=True, cache=True)
-def _rank_axis0_average(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_average_no_nan_fast(
+    arr: np.ndarray, ascending: bool = True
+) -> np.ndarray:
+    """Rank axis=1 average for dense finite rows without NaN bookkeeping."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+
+    for row in prange(n_rows):
+        row_data = arr[row, :].copy()
+
+        if ascending:
+            sorted_idx = np.argsort(row_data)
+        else:
+            sorted_idx = np.argsort(-row_data)
+
+        ranks = np.empty(n_cols, dtype=np.float64)
+        i = 0
+        while i < n_cols:
+            j = i
+            while j < n_cols - 1:
+                idx_j = sorted_idx[j]
+                idx_j1 = sorted_idx[j + 1]
+                if row_data[idx_j] != row_data[idx_j1]:
+                    break
+                j += 1
+
+            avg_rank = (i + j + 2) / 2
+            for k in range(i, j + 1):
+                ranks[sorted_idx[k]] = avg_rank
+            i = j + 1
+
+        result[row, :] = ranks
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _rank_axis0_average(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=0 (down columns) using average method."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -171,7 +243,9 @@ def _rank_axis0_average(arr: np.ndarray, ascending: bool = True, na_option: int 
 
 
 @njit(parallel=True, cache=True)
-def _rank_axis1_min(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_min(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using min method (ties get minimum rank)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -220,7 +294,9 @@ def _rank_axis1_min(arr: np.ndarray, ascending: bool = True, na_option: int = 0)
 
 
 @njit(parallel=True, cache=True)
-def _rank_axis1_max(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_max(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using max method (ties get maximum rank)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -269,7 +345,9 @@ def _rank_axis1_max(arr: np.ndarray, ascending: bool = True, na_option: int = 0)
 
 
 @njit(parallel=True, cache=True)
-def _rank_axis1_first(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_first(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using first method (ties broken by order)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -303,7 +381,9 @@ def _rank_axis1_first(arr: np.ndarray, ascending: bool = True, na_option: int = 
 
 
 @njit(parallel=True, cache=True)
-def _rank_axis1_dense(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_dense(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using dense method (no gaps in ranks)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -355,8 +435,11 @@ def _rank_axis1_dense(arr: np.ndarray, ascending: bool = True, na_option: int = 
 # Serial implementations (for small arrays - avoids parallel overhead)
 # =============================================================================
 
+
 @njit(cache=True)
-def _rank_axis1_average_serial(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_average_serial(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using average method (serial version)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -404,7 +487,9 @@ def _rank_axis1_average_serial(arr: np.ndarray, ascending: bool = True, na_optio
 
 
 @njit(cache=True)
-def _rank_axis0_average_serial(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis0_average_serial(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=0 using average method (serial version)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -452,7 +537,9 @@ def _rank_axis0_average_serial(arr: np.ndarray, ascending: bool = True, na_optio
 
 
 @njit(cache=True)
-def _rank_axis1_min_serial(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_min_serial(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using min method (serial version)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -500,7 +587,9 @@ def _rank_axis1_min_serial(arr: np.ndarray, ascending: bool = True, na_option: i
 
 
 @njit(cache=True)
-def _rank_axis1_max_serial(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_max_serial(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using max method (serial version)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -548,7 +637,9 @@ def _rank_axis1_max_serial(arr: np.ndarray, ascending: bool = True, na_option: i
 
 
 @njit(cache=True)
-def _rank_axis1_first_serial(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_first_serial(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using first method (serial version)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -582,7 +673,9 @@ def _rank_axis1_first_serial(arr: np.ndarray, ascending: bool = True, na_option:
 
 
 @njit(cache=True)
-def _rank_axis1_dense_serial(arr: np.ndarray, ascending: bool = True, na_option: int = 0) -> np.ndarray:
+def _rank_axis1_dense_serial(
+    arr: np.ndarray, ascending: bool = True, na_option: int = 0
+) -> np.ndarray:
     """Rank values along axis=1 using dense method (serial version)."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -634,13 +727,14 @@ def _rank_axis1_dense_serial(arr: np.ndarray, ascending: bool = True, na_option:
 # Main entry point
 # =============================================================================
 
+
 def optimized_rank(
     df: pd.DataFrame,
     axis: int = 0,
-    method: str = 'average',
-    na_option: str = 'keep',
+    method: str = "average",
+    na_option: str = "keep",
     ascending: bool = True,
-    pct: bool = False
+    pct: bool = False,
 ) -> pd.DataFrame:
     """Optimized DataFrame rank operation."""
     if not isinstance(df, pd.DataFrame):
@@ -666,60 +760,83 @@ def optimized_rank(
 
     # Select method and axis
     if axis == 1:
-        if method == 'average':
+        if method == "average":
             if use_parallel:
-                result = _rank_axis1_average(arr, ascending, na_opt)
+                if (
+                    arr.shape[0] >= 512
+                    and arr.shape[1] >= 1024
+                    and not np.isnan(arr).any()
+                ):
+                    result = _bounded_numba_rank(
+                        _rank_axis1_average_no_nan_fast, arr, ascending
+                    )
+                else:
+                    result = _bounded_numba_rank(
+                        _rank_axis1_average, arr, ascending, na_opt
+                    )
             else:
                 result = _rank_axis1_average_serial(arr, ascending, na_opt)
-        elif method == 'min':
+        elif method == "min":
             if use_parallel:
-                result = _rank_axis1_min(arr, ascending, na_opt)
+                result = _bounded_numba_rank(_rank_axis1_min, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_min_serial(arr, ascending, na_opt)
-        elif method == 'max':
+        elif method == "max":
             if use_parallel:
-                result = _rank_axis1_max(arr, ascending, na_opt)
+                result = _bounded_numba_rank(_rank_axis1_max, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_max_serial(arr, ascending, na_opt)
-        elif method == 'first':
+        elif method == "first":
             if use_parallel:
-                result = _rank_axis1_first(arr, ascending, na_opt)
+                result = _bounded_numba_rank(_rank_axis1_first, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_first_serial(arr, ascending, na_opt)
-        elif method == 'dense':
+        elif method == "dense":
             if use_parallel:
-                result = _rank_axis1_dense(arr, ascending, na_opt)
+                result = _bounded_numba_rank(_rank_axis1_dense, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_dense_serial(arr, ascending, na_opt)
         else:
             raise ValueError(f"Unknown method: {method}")
     else:  # axis == 0
-        if method == 'average':
+        if method == "average":
             if use_parallel:
-                result = _rank_axis0_average(arr, ascending, na_opt)
+                result = _bounded_numba_rank(
+                    _rank_axis0_average, arr, ascending, na_opt
+                )
             else:
                 result = _rank_axis0_average_serial(arr, ascending, na_opt)
         else:
             # For other methods on axis=0, transpose and use axis=1 functions
-            arr_t = np.ascontiguousarray(arr.T)  # Ensure C-contiguous for row operations
-            if method == 'min':
+            arr_t = np.ascontiguousarray(
+                arr.T
+            )  # Ensure C-contiguous for row operations
+            if method == "min":
                 if use_parallel:
-                    result_t = _rank_axis1_min(arr_t, ascending, na_opt)
+                    result_t = _bounded_numba_rank(
+                        _rank_axis1_min, arr_t, ascending, na_opt
+                    )
                 else:
                     result_t = _rank_axis1_min_serial(arr_t, ascending, na_opt)
-            elif method == 'max':
+            elif method == "max":
                 if use_parallel:
-                    result_t = _rank_axis1_max(arr_t, ascending, na_opt)
+                    result_t = _bounded_numba_rank(
+                        _rank_axis1_max, arr_t, ascending, na_opt
+                    )
                 else:
                     result_t = _rank_axis1_max_serial(arr_t, ascending, na_opt)
-            elif method == 'first':
+            elif method == "first":
                 if use_parallel:
-                    result_t = _rank_axis1_first(arr_t, ascending, na_opt)
+                    result_t = _bounded_numba_rank(
+                        _rank_axis1_first, arr_t, ascending, na_opt
+                    )
                 else:
                     result_t = _rank_axis1_first_serial(arr_t, ascending, na_opt)
-            elif method == 'dense':
+            elif method == "dense":
                 if use_parallel:
-                    result_t = _rank_axis1_dense(arr_t, ascending, na_opt)
+                    result_t = _bounded_numba_rank(
+                        _rank_axis1_dense, arr_t, ascending, na_opt
+                    )
                 else:
                     result_t = _rank_axis1_dense_serial(arr_t, ascending, na_opt)
             else:
@@ -735,20 +852,27 @@ def optimized_rank(
         result = result / n_valid
 
     return wrap_result(
-        result, numeric_df, columns=numeric_cols,
-        merge_non_numeric=True, original_df=df
+        result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
     )
 
 
-def _patched_rank(df, axis=0, method='average', numeric_only=False,
-                  na_option='keep', ascending=True, pct=False):
+def _patched_rank(
+    df,
+    axis=0,
+    method="average",
+    numeric_only=False,
+    na_option="keep",
+    ascending=True,
+    pct=False,
+):
     """Patched rank method for DataFrame."""
-    return optimized_rank(df, axis=axis, method=method, na_option=na_option,
-                          ascending=ascending, pct=pct)
+    return optimized_rank(
+        df, axis=axis, method=method, na_option=na_option, ascending=ascending, pct=pct
+    )
 
 
 def apply_rank_patches():
     """Apply rank operation patch to pandas."""
     from .._patch import patch
 
-    patch(pd.DataFrame, 'rank', _patched_rank)
+    patch(pd.DataFrame, "rank", _patched_rank)

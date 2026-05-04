@@ -23,6 +23,7 @@ HIGH_OVERHEAD_FLOOR = 4.0
 MIN_HIGH_OVERHEAD_SPEEDUP = 4.0
 
 PARALLEL_PATHS = {
+    "numpy_vectorized",
     "parallel",
     "parallel_numba",
     "threadpool",
@@ -35,7 +36,9 @@ NAMED_PARALLELISM_CASES = {
     "rolling-medium-100mb",
     "expanding-wide-10mb",
     "aggregation-wide-10mb",
+    "aggregation-axis1-wide-32mb",
     "rank-wide-1mb-control",
+    "rank-axis1-wide-32mb",
     "pairwise-safe-rolling-corr",
 }
 TOP_LEVEL_REQUIRED_FIELDS = {

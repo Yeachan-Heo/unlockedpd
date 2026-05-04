@@ -32,7 +32,9 @@ DEFAULT_CASES = (
     "rolling-medium-100mb",
     "expanding-wide-10mb",
     "aggregation-wide-10mb",
+    "aggregation-axis1-wide-32mb",
     "rank-wide-1mb-control",
+    "rank-axis1-wide-32mb",
     "pairwise-safe-rolling-corr",
 )
 
@@ -77,7 +79,43 @@ def _case_matrix() -> List[CaseSpec]:
         CaseSpec(
             "aggregation-wide-10mb", "dataframe_sum", (1280, 1024), {"axis": 0}, True
         ),
+        CaseSpec(
+            "aggregation-axis1-wide-32mb",
+            "dataframe_sum",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "aggregation-axis1-wide-32mb",
+            "dataframe_mean",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "aggregation-axis1-wide-32mb",
+            "dataframe_std",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "aggregation-axis1-wide-32mb",
+            "dataframe_min",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "aggregation-axis1-wide-32mb",
+            "dataframe_max",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
         CaseSpec("rank-wide-1mb-control", "rank_axis1", (128, 1024), {"axis": 1}, True),
+        CaseSpec("rank-axis1-wide-32mb", "rank_axis1", (8192, 512), {"axis": 1}, True),
         CaseSpec(
             "pairwise-safe-rolling-corr",
             "rolling_corr",
@@ -244,7 +282,10 @@ def _dataframe(shape: tuple[int, int], seed: int):
 
 
 def _run_operation(
-    spec: Dict[str, Any], seed: int, implementation: str
+    spec: Dict[str, Any],
+    seed: int,
+    implementation: str,
+    df: Any = None,
 ) -> Tuple[Any, str]:
     operation = spec["operation"]
     shape = tuple(spec["shape"]) if spec.get("shape") else None
@@ -266,7 +307,8 @@ def _run_operation(
 
     if shape is None:
         raise ValueError(f"shape required for {operation}")
-    df = _dataframe(shape, seed)
+    if df is None:
+        df = _dataframe(shape, seed)
 
     if implementation == "optimized":
         selected_path = _infer_selected_path(operation, shape)
@@ -289,6 +331,12 @@ def _run_operation(
         result = df.mean(axis=params.get("axis", 0))
     elif operation == "dataframe_sum":
         result = df.sum(axis=params.get("axis", 0))
+    elif operation == "dataframe_std":
+        result = df.std(axis=params.get("axis", 0))
+    elif operation == "dataframe_min":
+        result = df.min(axis=params.get("axis", 0))
+    elif operation == "dataframe_max":
+        result = df.max(axis=params.get("axis", 0))
     elif operation == "rank_axis1":
         result = df.rank(axis=1)
     else:
@@ -354,16 +402,33 @@ def _worker_main(args: argparse.Namespace) -> int:
     spec = json.loads(args.worker_case)
     implementation = args.worker_implementation
     mode = args.worker_mode
+    operation = str(spec.get("operation", ""))
+    shape = tuple(spec["shape"]) if spec.get("shape") else None
 
     # Keep pandas baseline isolated from unlockedpd monkey patches.
     if implementation == "pandas":
         os.environ["UNLOCKEDPD_ENABLED"] = "false"
+
+    prepared_df = None
+    if operation != "import_unlockedpd":
+        if shape is None:
+            raise ValueError(f"shape required for {operation}")
+        # Input construction can dominate sub-10ms DataFrame reductions. Build
+        # data outside the measured section so speedups reflect the operation
+        # backend rather than random-number/DataFrame setup cost.
+        prepared_df = _dataframe(shape, args.worker_seed)
 
     if mode == "warm" and implementation == "optimized":
         import unlockedpd
 
         if getattr(unlockedpd.config, "warmup", "lazy") in {"eager", "full"}:
             unlockedpd._warmup_all()
+
+    if mode == "warm":
+        # Warm means the measured repeat excludes import/JIT/cache population for
+        # this specific operation, not just that the package was imported.  Run
+        # one unmeasured operation first in the same isolated worker process.
+        _run_operation(spec, args.worker_seed, implementation, prepared_df)
 
     before_rss = _rss_bytes()
     before_ru = resource.getrusage(resource.RUSAGE_SELF)
@@ -374,7 +439,7 @@ def _worker_main(args: argparse.Namespace) -> int:
     try:
         with _ThreadSampler() as sampler:
             checksum, selected_path = _run_operation(
-                spec, args.worker_seed, implementation
+                spec, args.worker_seed, implementation, prepared_df
             )
         peak_threads = max(1, sampler.peak_threads - 1)  # subtract sampler thread
     except Exception as exc:  # worker reports failure as data so driver can continue
@@ -527,7 +592,8 @@ def _summarize(
     )
     selected_paths = sorted({str(r.get("selected_path", "unknown")) for r in opt})
     selected_parallel = any(
-        p in {"threadpool", "parallel_numba"} for p in selected_paths
+        p in {"threadpool", "parallel_numba", "numpy_vectorized"}
+        for p in selected_paths
     )
     resource_ok = (cpu_ratio is None or cpu_ratio <= max_cpu) and (
         rss_ratio is None or rss_ratio <= max_memory
