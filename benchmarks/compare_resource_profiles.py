@@ -62,6 +62,13 @@ SUMMARY_REQUIRED_FIELDS = {
     "selected_path_optimized",
     "pass_resource_budget",
 }
+CONFIG_REQUIRED_FIELDS = {
+    "num_threads",
+    "threadpool_workers",
+    "max_memory_overhead",
+    "max_cpu_overhead",
+    "warmup",
+}
 REPEAT_REQUIRED_FIELDS = {
     "implementation",
     "selected_path",
@@ -167,6 +174,19 @@ def validate_profile_schema(
             ComparisonIssue("FAIL", f"{label} must contain non-empty cases[]")
         )
         return issues
+
+    config = profile.get("config")
+    if not isinstance(config, dict):
+        issues.append(ComparisonIssue("FAIL", f"{label} missing config object"))
+    else:
+        missing_config = _missing_fields(config, CONFIG_REQUIRED_FIELDS)
+        if missing_config:
+            issues.append(
+                ComparisonIssue(
+                    "FAIL",
+                    f"{label} config missing fields: {', '.join(missing_config)}",
+                )
+            )
 
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
