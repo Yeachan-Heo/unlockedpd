@@ -117,8 +117,20 @@ import unlockedpd
 # Disable optimizations temporarily
 unlockedpd.config.enabled = False
 
-# Set thread count (default: min(cpu_count, 32))
+# Numba thread count only (0 = Numba default/auto)
 unlockedpd.config.num_threads = 16
+
+# Python ThreadPool cap for nogil column/pair dispatch (0 = adaptive auto)
+unlockedpd.config.threadpool_workers = 8
+
+# Resource-budget guardrails used by optimized dispatch/profiling
+unlockedpd.config.max_memory_overhead = 6.0
+unlockedpd.config.max_cpu_overhead = 6.0
+
+# Lazy by default to avoid import-time full warmup resource spikes.
+# Use eager for benchmark/server contexts where first-call latency matters.
+unlockedpd.config.warmup = "lazy"  # "none", "lazy", or "eager"
+unlockedpd.warmup_all()             # manual eager warmup entry point
 
 # Enable warnings when falling back to pandas
 unlockedpd.config.warn_on_fallback = True
@@ -127,14 +139,37 @@ unlockedpd.config.warn_on_fallback = True
 unlockedpd.config.parallel_threshold = 500_000
 ```
 
+`num_threads` remains scoped to Numba. Set `threadpool_workers` separately when you
+need to cap Python `ThreadPoolExecutor` paths.
+
 ### Environment Variables
 
 ```bash
 export UNLOCKEDPD_ENABLED=false
 export UNLOCKEDPD_NUM_THREADS=16
+export UNLOCKEDPD_THREADPOOL_WORKERS=8
+export UNLOCKEDPD_MAX_MEMORY_OVERHEAD=6.0
+export UNLOCKEDPD_MAX_CPU_OVERHEAD=6.0
+export UNLOCKEDPD_WARMUP=lazy
 export UNLOCKEDPD_WARN_ON_FALLBACK=true
 export UNLOCKEDPD_PARALLEL_THRESHOLD=500000
 ```
+
+Suggested presets:
+
+- Low-memory workstation: `UNLOCKEDPD_THREADPOOL_WORKERS=2`, `UNLOCKEDPD_WARMUP=lazy`.
+- Balanced default: leave worker cap at `auto`, keep `UNLOCKEDPD_WARMUP=lazy`.
+- Benchmark/server: set an explicit worker cap and `UNLOCKEDPD_WARMUP=eager`, or call `unlockedpd.warmup_all()` during service startup.
+
+### Resource profiling
+
+```bash
+python3 benchmarks/profile_resources.py   --seed 12345   --repeats 5   --cold-and-warm   --output .omx/artifacts/resource-after-$(date -u +%Y%m%dT%H%M%SZ).json
+```
+
+The profiler emits JSON with per-repeat wall time, process CPU seconds, RSS, thread
+diagnostics, selected path, and pandas-vs-optimized overhead ratios. It uses
+stdlib/OS resource probes; `psutil` is optional and not required at runtime.
 
 ### Temporarily Disable
 
@@ -152,16 +187,17 @@ unlockedpd achieves its speedups through:
 
 1. **Numba JIT compilation**: Operations are compiled to optimized machine code
 2. **`nogil=True`**: Releases Python's GIL during computation
-3. **ThreadPoolExecutor**: Achieves true parallelism across CPU cores
-4. **Column-wise chunking**: Distributes work efficiently across threads
+3. **ThreadPoolExecutor**: Achieves true parallelism across CPU cores with an adaptive worker resolver
+4. **Column-wise chunking**: Distributes work efficiently without exceeding useful work units
+5. **Resource guardrails**: Pairwise and ThreadPool paths estimate memory pressure and fall back to pandas when configured budgets would be exceeded
 
-The key insight: `@njit(nogil=True)` + `ThreadPoolExecutor` combines Numba's fast compiled loops with true multi-threaded parallelism.
+The key insight: `@njit(nogil=True)` + bounded `ThreadPoolExecutor` combines Numba's fast compiled loops with true multi-threaded parallelism while keeping worker fan-out explicit.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    ThreadPoolExecutor                        │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐       ┌─────────┐   │
-│  │ Thread 1│  │ Thread 2│  │ Thread 3│  ...  │Thread 32│   │
+│  │ Thread 1│  │ Thread 2│  │ Thread 3│  ...  │Thread N │   │
 │  │ Cols 0-k│  │Cols k-2k│  │Cols 2k..│       │Cols ..N │   │
 │  │ (nogil) │  │ (nogil) │  │ (nogil) │       │ (nogil) │   │
 │  └─────────┘  └─────────┘  └─────────┘       └─────────┘   │
