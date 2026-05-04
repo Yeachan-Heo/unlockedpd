@@ -33,29 +33,32 @@ def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
     Pandas is already very good for dense numeric reductions, but the older
     Numba dispatch paid heavy Python/ThreadPool and NaN-branch costs for simple
     reducers.  For ``skipna=False`` NumPy's normal reducers match pandas NaN
-    propagation.  For ``skipna=True`` we can use the same fast reducers only
-    after proving the array has no NaNs.
+    propagation.  For ``skipna=True`` we speculatively run the SIMD reducer
+    first and only pay the full NaN scan/fallback when the result shows a NaN.
     """
 
-    if skipna and np.isnan(arr).any():
+    if op == "sum":
+        result = np.sum(arr, axis=axis)
+    elif op == "mean":
+        result = np.mean(arr, axis=axis)
+    elif op == "min":
+        result = np.min(arr, axis=axis)
+    elif op == "max":
+        result = np.max(arr, axis=axis)
+    elif op == "prod":
+        result = np.prod(arr, axis=axis)
+    elif op == "var":
+        result = np.var(arr, axis=axis, ddof=ddof)
+    elif op == "std":
+        result = np.std(arr, axis=axis, ddof=ddof)
+    else:
+        return None
+
+    if skipna and np.isnan(result).any() and np.isnan(arr).any():
         return None
 
     record_dispatch_path("numpy_vectorized")
-    if op == "sum":
-        return np.sum(arr, axis=axis)
-    if op == "mean":
-        return np.mean(arr, axis=axis)
-    if op == "min":
-        return np.min(arr, axis=axis)
-    if op == "max":
-        return np.max(arr, axis=axis)
-    if op == "prod":
-        return np.prod(arr, axis=axis)
-    if op == "var":
-        return np.var(arr, axis=axis, ddof=ddof)
-    if op == "std":
-        return np.std(arr, axis=axis, ddof=ddof)
-    return None
+    return result
 
 
 def _bounded_numba_axis1(kernel, arr, *args, cap=8):

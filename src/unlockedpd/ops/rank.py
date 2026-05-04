@@ -870,5 +870,37 @@ def _patched_rank(
 def apply_rank_patches():
     """Apply rank operation patch to pandas."""
     from .._patch import patch
+    from .._config import config
 
-    patch(pd.DataFrame, "rank", _patched_rank)
+    original_rank = pd.DataFrame.rank
+
+    def _patched_rank_bounded(
+        df,
+        axis=0,
+        method="average",
+        numeric_only=False,
+        na_option="keep",
+        ascending=True,
+        pct=False,
+    ):
+        if not config.enabled or df.shape[0] * df.shape[1] < PARALLEL_THRESHOLD:
+            return original_rank(
+                df,
+                axis=axis,
+                method=method,
+                numeric_only=numeric_only,
+                na_option=na_option,
+                ascending=ascending,
+                pct=pct,
+            )
+        return _patched_rank(
+            df,
+            axis=axis,
+            method=method,
+            numeric_only=numeric_only,
+            na_option=na_option,
+            ascending=ascending,
+            pct=pct,
+        )
+
+    patch(pd.DataFrame, "rank", _patched_rank_bounded, fallback=False)

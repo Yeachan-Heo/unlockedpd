@@ -33,6 +33,8 @@ DEFAULT_CASES = (
     "expanding-wide-10mb",
     "aggregation-wide-10mb",
     "aggregation-axis1-wide-32mb",
+    "cumulative-axis1-wide-32mb",
+    "transform-axis1-wide-32mb",
     "rank-wide-1mb-control",
     "rank-axis1-wide-32mb",
     "pairwise-safe-rolling-corr",
@@ -114,7 +116,56 @@ def _case_matrix() -> List[CaseSpec]:
             {"axis": 1},
             True,
         ),
-        CaseSpec("rank-wide-1mb-control", "rank_axis1", (128, 1024), {"axis": 1}, True),
+        CaseSpec(
+            "cumulative-axis1-wide-32mb",
+            "dataframe_cumsum",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis1-wide-32mb",
+            "dataframe_cumprod",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis1-wide-32mb",
+            "dataframe_cummin",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "cumulative-axis1-wide-32mb",
+            "dataframe_cummax",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "transform-axis1-wide-32mb",
+            "dataframe_diff",
+            (8192, 512),
+            {"axis": 1},
+            False,
+        ),
+        CaseSpec(
+            "transform-axis1-wide-32mb",
+            "dataframe_shift",
+            (8192, 512),
+            {"axis": 1},
+            False,
+        ),
+        CaseSpec(
+            "transform-axis1-wide-32mb",
+            "dataframe_pct_change",
+            (8192, 512),
+            {"axis": 1, "fill_method": None},
+            False,
+        ),
+        CaseSpec("rank-wide-1mb-control", "rank_axis1", (128, 1024), {"axis": 1}, False),
         CaseSpec("rank-axis1-wide-32mb", "rank_axis1", (8192, 512), {"axis": 1}, True),
         CaseSpec(
             "pairwise-safe-rolling-corr",
@@ -337,6 +388,28 @@ def _run_operation(
         result = df.min(axis=params.get("axis", 0))
     elif operation == "dataframe_max":
         result = df.max(axis=params.get("axis", 0))
+    elif operation == "dataframe_cumsum":
+        result = df.cumsum(axis=params.get("axis", 0))
+    elif operation == "dataframe_cumprod":
+        result = df.cumprod(axis=params.get("axis", 0))
+    elif operation == "dataframe_cummin":
+        result = df.cummin(axis=params.get("axis", 0))
+    elif operation == "dataframe_cummax":
+        result = df.cummax(axis=params.get("axis", 0))
+    elif operation == "dataframe_diff":
+        result = df.diff(axis=params.get("axis", 0), periods=params.get("periods", 1))
+    elif operation == "dataframe_shift":
+        result = df.shift(
+            axis=params.get("axis", 0),
+            periods=params.get("periods", 1),
+            fill_value=params.get("fill_value", None),
+        )
+    elif operation == "dataframe_pct_change":
+        result = df.pct_change(
+            axis=params.get("axis", 0),
+            periods=params.get("periods", 1),
+            fill_method=params.get("fill_method", None),
+        )
     elif operation == "rank_axis1":
         result = df.rank(axis=1)
     else:
@@ -350,9 +423,7 @@ def _run_operation(
         except Exception:
             pass
 
-    # Force materialization and keep a tiny checksum for sanity.
-    checksum = _checksum(result)
-    return checksum, selected_path
+    return result, selected_path
 
 
 def _checksum(result: Any) -> Dict[str, Any]:
@@ -386,12 +457,27 @@ def _infer_selected_path(operation: str, shape: tuple[int, int]) -> str:
             return "parallel_numba"
         return "serial_numba"
     if operation.startswith("dataframe_"):
+        if operation in {
+            "dataframe_cumsum",
+            "dataframe_cumprod",
+            "dataframe_cummin",
+            "dataframe_cummax",
+        }:
+            return "numpy_vectorized"
+        if operation in {
+            "dataframe_diff",
+            "dataframe_shift",
+            "dataframe_pct_change",
+        }:
+            return "pandas_native"
         if n >= 10_000_000:
             return "threadpool"
         if n >= 500_000:
             return "parallel_numba"
         return "serial_numba"
     if operation == "rank_axis1":
+        if n < 500_000:
+            return "pandas_native"
         return "parallel_numba"
     if operation in {"rolling_corr", "rolling_cov"}:
         return "threadpool"
@@ -436,20 +522,35 @@ def _worker_main(args: argparse.Namespace) -> int:
     selected_path = "pandas" if implementation == "pandas" else "optimized"
     error = None
     checksum: Any = None
+    checksum_wall = 0.0
+    checksum_cpu = 0.0
     try:
         with _ThreadSampler() as sampler:
-            checksum, selected_path = _run_operation(
+            result, selected_path = _run_operation(
                 spec, args.worker_seed, implementation, prepared_df
             )
+        after_wall = time.perf_counter()
+        after_ru = resource.getrusage(resource.RUSAGE_SELF)
+        after_rss = _rss_bytes()
+        checksum_before_wall = time.perf_counter()
+        checksum_before_ru = resource.getrusage(resource.RUSAGE_SELF)
+        checksum = _checksum(result)
+        checksum_after_ru = resource.getrusage(resource.RUSAGE_SELF)
+        checksum_wall = max(0.0, time.perf_counter() - checksum_before_wall)
+        checksum_cpu = max(
+            0.0,
+            (checksum_after_ru.ru_utime - checksum_before_ru.ru_utime)
+            + (checksum_after_ru.ru_stime - checksum_before_ru.ru_stime),
+        )
         peak_threads = max(1, sampler.peak_threads - 1)  # subtract sampler thread
     except Exception as exc:  # worker reports failure as data so driver can continue
         error = f"{type(exc).__name__}: {exc}"
         peak_threads = max(1, _thread_count())
         if implementation == "optimized" and "ResourceBudgetExceeded" in error:
             selected_path = "fallback"
-    after_wall = time.perf_counter()
-    after_ru = resource.getrusage(resource.RUSAGE_SELF)
-    after_rss = _rss_bytes()
+        after_wall = time.perf_counter()
+        after_ru = resource.getrusage(resource.RUSAGE_SELF)
+        after_rss = _rss_bytes()
 
     record = {
         "implementation": implementation,
@@ -457,6 +558,8 @@ def _worker_main(args: argparse.Namespace) -> int:
         "wall_seconds": max(0.0, after_wall - before_wall),
         "user_cpu_seconds": max(0.0, after_ru.ru_utime - before_ru.ru_utime),
         "system_cpu_seconds": max(0.0, after_ru.ru_stime - before_ru.ru_stime),
+        "checksum_wall_seconds": checksum_wall,
+        "checksum_cpu_seconds": checksum_cpu,
         "peak_rss_bytes": max(_maxrss_bytes(), before_rss, after_rss),
         "rss_delta_bytes": after_rss - before_rss,
         "peak_threads": int(peak_threads),

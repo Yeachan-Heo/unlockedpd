@@ -7,12 +7,13 @@ based on array dimensions for maximum CPU utilization.
 import numpy as np
 from numba import njit, prange
 import pandas as pd
-from typing import Union, Any
 
 from .._compat import (
-    get_numeric_columns, get_numeric_columns_fast, is_all_numeric,
-    wrap_result, wrap_result_fast, ensure_float64,
-    get_optimal_parallel_axis, prepare_array_for_parallel
+    get_numeric_columns,
+    is_all_numeric,
+    wrap_result,
+    wrap_result_fast,
+    ensure_float64,
 )
 
 # Threshold for parallel vs serial execution (elements)
@@ -26,6 +27,24 @@ PARALLEL_THRESHOLD = 500_000
 # - 1000 rows with 64 CPUs = ~16 rows per CPU (borderline)
 # - 10000 rows with 64 CPUs = ~156 rows per CPU (good)
 MIN_ROWS_FOR_PARALLEL = 2000
+
+
+def _normalize_axis(axis) -> int:
+    if axis in (0, "index", None):
+        return 0
+    if axis in (1, "columns"):
+        return 1
+    raise ValueError(f"No axis named {axis!r}")
+
+
+def _call_original_dataframe_method(df: pd.DataFrame, method_name: str, *args, **kwargs):
+    from .._patch import _PatchRegistry
+
+    original = _PatchRegistry.get_original(pd.DataFrame, method_name)
+    if original is None:
+        raise TypeError(f"Original pandas DataFrame.{method_name} is unavailable")
+    return original(df, *args, **kwargs)
+
 
 
 # ============================================================================
@@ -424,8 +443,11 @@ def optimized_diff(df, periods=1, axis=0):
 
     Uses shape-adaptive parallelization for maximum CPU utilization.
     """
-    if axis not in (0, 'index'):
-        raise TypeError("Optimization only for axis=0")
+    axis = _normalize_axis(axis)
+    if axis == 1:
+        return _call_original_dataframe_method(
+            df, "diff", periods=periods, axis=axis
+        )
 
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
@@ -481,6 +503,19 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
         raise ValueError("limit is not supported in optimized pct_change")
     if freq is not None:
         raise ValueError("freq is not supported in optimized pct_change")
+    axis_arg = kwargs.pop("axis", 0)
+    axis = _normalize_axis(axis_arg)
+    if axis == 1:
+        return _call_original_dataframe_method(
+            df,
+            "pct_change",
+            periods=periods,
+            fill_method=fill_method,
+            limit=limit,
+            freq=freq,
+            axis=axis_arg,
+            **kwargs,
+        )
 
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
@@ -492,9 +527,9 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
     # Handle fill_method - match pandas behavior
     # pandas default is 'pad' (forward fill) before computing pct_change
     if fill_method in ('pad', 'ffill'):
-        df = df.ffill()
+        df = df.ffill(axis=axis)
     elif fill_method in ('bfill', 'backfill'):
-        df = df.bfill()
+        df = df.bfill(axis=axis)
     elif fill_method is not None:
         raise ValueError(f"fill_method must be 'pad', 'ffill', 'bfill', 'backfill', or None, got {fill_method!r}")
     # fill_method=None: don't fill, compute pct_change with NaNs as-is
@@ -528,8 +563,16 @@ def optimized_shift(df, periods=1, freq=None, axis=0, fill_value=None):
     if freq is not None:
         raise ValueError("freq is not supported in optimized shift")
 
-    if axis not in (0, 'index'):
-        raise TypeError("Optimization only for axis=0")
+    axis = _normalize_axis(axis)
+    if axis == 1:
+        return _call_original_dataframe_method(
+            df,
+            "shift",
+            periods=periods,
+            freq=freq,
+            axis=axis,
+            fill_value=fill_value,
+        )
 
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
@@ -564,10 +607,98 @@ def optimized_shift(df, periods=1, freq=None, axis=0, fill_value=None):
 def apply_transform_patches():
     """Apply all transform operation patches to pandas."""
     from .._patch import patch
+    from .._config import config
 
-    patch(pd.DataFrame, 'diff', optimized_diff)
-    patch(pd.DataFrame, 'pct_change', optimized_pct_change)
-    patch(pd.DataFrame, 'shift', optimized_shift)
+    original_diff = pd.DataFrame.diff
+    original_pct_change = pd.DataFrame.pct_change
+    original_shift = pd.DataFrame.shift
+
+    def _warn_and_call_original(method_name, original, self, *args, error=None, **kwargs):
+        if error is not None and config.warn_on_fallback:
+            import warnings
+
+            warnings.warn(
+                f"unlockedpd: Falling back to pandas for {method_name}: {error}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return original(self, *args, **kwargs)
+
+    def _patched_diff(self, periods=1, axis=0):
+        if not config.enabled or _normalize_axis(axis) == 1:
+            return original_diff(self, periods=periods, axis=axis)
+        try:
+            return optimized_diff(self, periods=periods, axis=axis)
+        except Exception as exc:
+            return _warn_and_call_original(
+                "diff", original_diff, self, periods=periods, axis=axis, error=exc
+            )
+
+    def _patched_pct_change(
+        self, periods=1, fill_method='pad', limit=None, freq=None, **kwargs
+    ):
+        axis = kwargs.get("axis", 0)
+        if not config.enabled or _normalize_axis(axis) == 1:
+            return original_pct_change(
+                self,
+                periods=periods,
+                fill_method=fill_method,
+                limit=limit,
+                freq=freq,
+                **kwargs,
+            )
+        try:
+            return optimized_pct_change(
+                self,
+                periods=periods,
+                fill_method=fill_method,
+                limit=limit,
+                freq=freq,
+                **kwargs,
+            )
+        except Exception as exc:
+            return _warn_and_call_original(
+                "pct_change",
+                original_pct_change,
+                self,
+                periods=periods,
+                fill_method=fill_method,
+                limit=limit,
+                freq=freq,
+                error=exc,
+                **kwargs,
+            )
+
+    def _patched_shift(self, periods=1, freq=None, axis=0, fill_value=None, **kwargs):
+        if not config.enabled or _normalize_axis(axis) == 1:
+            return original_shift(
+                self,
+                periods=periods,
+                freq=freq,
+                axis=axis,
+                fill_value=fill_value,
+                **kwargs,
+            )
+        try:
+            return optimized_shift(
+                self, periods=periods, freq=freq, axis=axis, fill_value=fill_value
+            )
+        except Exception as exc:
+            return _warn_and_call_original(
+                "shift",
+                original_shift,
+                self,
+                periods=periods,
+                freq=freq,
+                axis=axis,
+                fill_value=fill_value,
+                error=exc,
+                **kwargs,
+            )
+
+    patch(pd.DataFrame, 'diff', _patched_diff, fallback=False)
+    patch(pd.DataFrame, 'pct_change', _patched_pct_change, fallback=False)
+    patch(pd.DataFrame, 'shift', _patched_shift, fallback=False)
 
 
 # Backwards compatibility aliases

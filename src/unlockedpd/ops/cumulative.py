@@ -12,9 +12,16 @@ import numpy as np
 import pandas as pd
 from numba import njit
 from concurrent.futures import ThreadPoolExecutor
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
+from .._compat import (
+    get_numeric_columns_fast,
+    is_all_numeric,
+    wrap_result,
+    wrap_result_fast,
+    ensure_float64,
+)
 from .._resources import (
     assert_memory_budget,
+    record_dispatch_path,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -213,6 +220,74 @@ def _should_use_parallel(arr):
     return n_cols >= MIN_COLS_FOR_PARALLEL and n_rows >= MIN_ROWS_FOR_PARALLEL
 
 
+def _normalize_axis(axis) -> int:
+    if axis in (0, "index", None):
+        return 0
+    if axis in (1, "columns"):
+        return 1
+    raise ValueError(f"No axis named {axis!r}")
+
+
+def _numpy_accumulate(arr: np.ndarray, op: str, axis: int, skipna: bool) -> np.ndarray:
+    """Run NumPy cumulative kernels with pandas-compatible skipna handling.
+
+    Axis=1 cumulative operations are a large pandas slow path because pandas
+    iterates block/column machinery while the underlying row-major buffer is
+    contiguous.  NumPy's accumulate kernels exploit that layout directly.  The
+    dense no-NaN case keeps a single output array; only true missing-value cases
+    allocate the mask/fill intermediates needed for pandas ``skipna=True``.
+    """
+
+    if op == "cumsum":
+        result = np.cumsum(arr, axis=axis)
+        fill_value = 0
+        redo = np.cumsum
+    elif op == "cumprod":
+        result = np.cumprod(arr, axis=axis)
+        fill_value = 1
+        redo = np.cumprod
+    elif op == "cummin":
+        result = np.minimum.accumulate(arr, axis=axis)
+        fill_value = np.inf
+        redo = np.minimum.accumulate
+    elif op == "cummax":
+        result = np.maximum.accumulate(arr, axis=axis)
+        fill_value = -np.inf
+        redo = np.maximum.accumulate
+    else:  # pragma: no cover - guarded by callers
+        raise ValueError(f"unsupported cumulative op: {op}")
+
+    if skipna and np.isnan(result).any():
+        mask = np.isnan(arr)
+        if mask.any():
+            result = redo(np.where(mask, fill_value, arr), axis=axis)
+            result[mask] = np.nan
+
+    record_dispatch_path("numpy_vectorized")
+    return result
+
+
+def _axis1_numpy_cumulative(df: pd.DataFrame, op: str, skipna: bool) -> pd.DataFrame:
+    """Fast path for all-numeric row-wise cumulative DataFrame operations."""
+
+    if not is_all_numeric(df):
+        raise TypeError("axis=1 cumulative optimization requires all numeric columns")
+
+    # Preserve NumPy's dtype behavior for integer/bool dense frames instead of
+    # forcing float64 like the Numba column-wise kernels need to do.
+    arr = df.to_numpy(copy=False)
+    assert_memory_budget(
+        simple_result_memory_estimate(
+            arr.shape[0],
+            arr.shape[1],
+            dtype=arr.dtype,
+            intermediates=0,
+        ),
+        operation="cumulative",
+    )
+    return wrap_result_fast(_numpy_accumulate(arr, op, 1, skipna), df)
+
+
 # ============================================================================
 # Wrapper functions for pandas DataFrame methods
 # ============================================================================
@@ -223,12 +298,14 @@ def optimized_cumsum(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, "index", None):
-        raise ValueError("Only axis=0 is supported")
+    axis = _normalize_axis(axis)
 
     # Handle empty DataFrame
     if df.empty:
         raise TypeError("Use pandas for empty DataFrames")
+
+    if axis == 1:
+        return _axis1_numpy_cumulative(df, "cumsum", skipna)
 
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:
@@ -256,12 +333,14 @@ def optimized_cumprod(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, "index", None):
-        raise ValueError("Only axis=0 is supported")
+    axis = _normalize_axis(axis)
 
     # Handle empty DataFrame
     if df.empty:
         raise TypeError("Use pandas for empty DataFrames")
+
+    if axis == 1:
+        return _axis1_numpy_cumulative(df, "cumprod", skipna)
 
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:
@@ -288,12 +367,14 @@ def optimized_cummin(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, "index", None):
-        raise ValueError("Only axis=0 is supported")
+    axis = _normalize_axis(axis)
 
     # Handle empty DataFrame
     if df.empty:
         raise TypeError("Use pandas for empty DataFrames")
+
+    if axis == 1:
+        return _axis1_numpy_cumulative(df, "cummin", skipna)
 
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:
@@ -320,12 +401,14 @@ def optimized_cummax(df, axis=0, skipna=True, *args, **kwargs):
     if not isinstance(df, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
 
-    if axis not in (0, "index", None):
-        raise ValueError("Only axis=0 is supported")
+    axis = _normalize_axis(axis)
 
     # Handle empty DataFrame
     if df.empty:
         raise TypeError("Use pandas for empty DataFrames")
+
+    if axis == 1:
+        return _axis1_numpy_cumulative(df, "cummax", skipna)
 
     numeric_cols, numeric_df = get_numeric_columns_fast(df)
     if len(numeric_cols) == 0:

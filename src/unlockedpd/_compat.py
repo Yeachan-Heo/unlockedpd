@@ -57,9 +57,10 @@ def is_all_numeric(df: pd.DataFrame) -> bool:
     """
     if len(df.columns) == 0:
         return False
-    # Check each column's dtype kind: b=bool, i=int, u=uint, f=float, c=complex
-    for col in df.columns:
-        if df[col].dtype.kind not in 'biufc':
+    # Check dtype kinds without materializing one Series per column.
+    # b=bool, i=int, u=uint, f=float, c=complex
+    for dtype in df.dtypes:
+        if dtype.kind not in "biufc":
             return False
     return True
 
