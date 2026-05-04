@@ -1,6 +1,8 @@
 """Helpers for bounded ThreadPool fan-out in operation modules."""
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from typing import List, Tuple
 
 
@@ -88,3 +90,18 @@ def make_threadpool_chunks(
         if i * chunk_size < units
     ]
     return max(1, len(chunks)), chunks
+
+
+def run_threadpool_chunks(
+    work_units: int,
+    process_chunk: Callable[[Tuple[int, int]], None],
+    *,
+    operation_cap: int = DEFAULT_THREADPOOL_WORKER_CAP,
+) -> None:
+    """Run ``process_chunk`` across bounded contiguous work chunks."""
+    workers, chunks = make_threadpool_chunks(work_units, operation_cap=operation_cap)
+    if not chunks:
+        return
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))

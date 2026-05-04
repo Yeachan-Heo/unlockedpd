@@ -12,10 +12,8 @@ import numpy as np
 from numba import njit, prange
 import pandas as pd
 from typing import Union
-from concurrent.futures import ThreadPoolExecutor
-import os
-
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from ._threadpool import run_threadpool_chunks
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
@@ -24,9 +22,6 @@ PARALLEL_THRESHOLD = 500_000
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
 
-# Adaptive worker count for ThreadPool (capped for memory bandwidth)
-_CPU_COUNT = os.cpu_count() or 8
-THREADPOOL_WORKERS = min(_CPU_COUNT, 32)
 
 
 # ============================================================================
@@ -753,17 +748,12 @@ def _expanding_mean_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _expanding_mean_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -779,17 +769,12 @@ def _expanding_sum_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _expanding_sum_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -800,17 +785,12 @@ def _expanding_std_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _expanding_std_nogil_chunk(arr, result, start_col, end_col, min_periods, ddof)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -821,17 +801,12 @@ def _expanding_var_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _expanding_var_nogil_chunk(arr, result, start_col, end_col, min_periods, ddof)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -847,17 +822,12 @@ def _expanding_min_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _expanding_min_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -873,17 +843,12 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _expanding_max_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 

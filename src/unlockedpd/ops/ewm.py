@@ -9,17 +9,14 @@ import pandas as pd
 from typing import Union, Optional
 
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from ._threadpool import run_threadpool_chunks
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
 PARALLEL_THRESHOLD = 500_000
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements
 
-import os
-from concurrent.futures import ThreadPoolExecutor
 
-_CPU_COUNT = os.cpu_count() or 8
-THREADPOOL_WORKERS = min(_CPU_COUNT, 32)
 
 
 # ============================================================================
@@ -646,17 +643,12 @@ def _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods):
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -667,17 +659,12 @@ def _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 

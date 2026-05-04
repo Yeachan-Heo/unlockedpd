@@ -10,20 +10,15 @@ Operations support axis parameter:
 """
 import numpy as np
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor
 from typing import Union
 from numba import njit, prange
-import os
-
 from .._compat import get_numeric_columns_fast, ensure_float64
+from ._threadpool import run_threadpool_chunks
 
 # Thresholds for parallel execution dispatch
 PARALLEL_THRESHOLD = 500_000      # Use parallel prange above this
 THREADPOOL_THRESHOLD = 10_000_000 # Use ThreadPool+nogil above this
 
-# Optimal worker count
-_CPU_COUNT = os.cpu_count() or 8
-THREADPOOL_WORKERS = min(_CPU_COUNT, 32)
 
 
 # ============================================================================
@@ -110,17 +105,12 @@ def _sum_threadpool(arr, skipna):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _sum_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -219,17 +209,12 @@ def _mean_threadpool(arr, skipna):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _mean_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -361,17 +346,12 @@ def _var_threadpool(arr, skipna, ddof):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _var_nogil_chunk(arr, result, start_col, end_col, skipna, ddof)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -471,17 +451,12 @@ def _std_threadpool(arr, skipna, ddof):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _std_nogil_chunk(arr, result, start_col, end_col, skipna, ddof)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -604,17 +579,12 @@ def _min_threadpool(arr, skipna):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _min_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -737,17 +707,12 @@ def _max_threadpool(arr, skipna):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _max_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -887,17 +852,12 @@ def _median_threadpool(arr, skipna):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _median_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -1011,17 +971,12 @@ def _prod_threadpool(arr, skipna):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _prod_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
@@ -1121,17 +1076,12 @@ def _quantile_threadpool(arr, q):
     result = np.empty(n_cols, dtype=np.float64)
     result[:] = np.nan
 
-    chunk_size = max(1, (n_cols + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
-
     def process_chunk(args):
         start_col, end_col = args
         _quantile_nogil_chunk(arr, result, start_col, end_col, q)
 
-    chunks = [(i * chunk_size, min((i + 1) * chunk_size, n_cols))
-              for i in range(THREADPOOL_WORKERS) if i * chunk_size < n_cols]
 
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
-        list(executor.map(process_chunk, chunks))
+    run_threadpool_chunks(n_cols, process_chunk)
 
     return result
 
