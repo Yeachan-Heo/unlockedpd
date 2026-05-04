@@ -18,7 +18,6 @@ THREADPOOL_THRESHOLD = 10_000_000  # 10M elements
 
 
 
-
 # ============================================================================
 # Helper function to compute alpha parameter
 # ============================================================================
@@ -64,7 +63,6 @@ def _get_alpha(span=None, halflife=None, alpha=None, com=None):
         if com < 0:
             raise ValueError(f"com must be >= 0, got {com}")
         return 1.0 / (1.0 + com)
-
 
 # ============================================================================
 # Core Numba-jitted functions (PARALLEL versions)
@@ -297,7 +295,6 @@ def _ewm_std_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
     var_result = _ewm_var_2d(arr, alpha, adjust, ignore_na, min_periods, bias)
     return np.sqrt(var_result)
 
-
 # ============================================================================
 # Core Numba-jitted functions (SERIAL versions for small arrays)
 # ============================================================================
@@ -475,7 +472,6 @@ def _ewm_std_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
     var_result = _ewm_var_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)
     return np.sqrt(var_result)
 
-
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
 # ============================================================================
@@ -632,7 +628,6 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                     else:
                         result[row, c] = np.nan
 
-
 # ============================================================================
 # ThreadPool functions using nogil kernels (4.7x faster than prange!)
 # ============================================================================
@@ -646,7 +641,6 @@ def _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods):
     def process_chunk(args):
         start_col, end_col = args
         _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -663,7 +657,6 @@ def _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
         start_col, end_col = args
         _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -673,7 +666,6 @@ def _ewm_std_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
     """Ultra-fast EWM std using ThreadPool + nogil kernels."""
     var_result = _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
     return np.sqrt(var_result)
-
 
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
@@ -704,7 +696,6 @@ def _ewm_std_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_std_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)
     return _ewm_std_2d(arr, alpha, adjust, ignore_na, min_periods, bias)
-
 
 # ============================================================================
 # Wrapper functions for pandas EWM objects

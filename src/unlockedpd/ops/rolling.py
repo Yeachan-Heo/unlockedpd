@@ -29,7 +29,6 @@ PARALLEL_THRESHOLD = 500_000
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
 
 
-
 # ============================================================================
 # Core Numba-jitted functions (PARALLEL versions)
 # ============================================================================
@@ -318,7 +317,6 @@ def _rolling_max_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarra
 
     return result
 
-
 # ============================================================================
 # Core Numba-jitted functions (SERIAL versions for small arrays)
 # ============================================================================
@@ -547,7 +545,6 @@ def _rolling_max_2d_serial(arr: np.ndarray, window: int, min_periods: int) -> np
                     result[row, col] = max_val
 
     return result
-
 
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
@@ -1242,7 +1239,6 @@ def _rolling_sem_2d_serial(arr: np.ndarray, window: int, min_periods: int, ddof:
 
     return result
 
-
 # ============================================================================
 # ThreadPool + NumPy cumsum trick for ultra-fast rolling (5x+ speedup)
 # Key insight: NumPy releases GIL, so ThreadPoolExecutor achieves true parallelism
@@ -1262,7 +1258,6 @@ def _rolling_mean_threadpool(arr: np.ndarray, window: int, min_periods: int) -> 
     def process_chunk(args):
         start_col, end_col = args
         _rolling_mean_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -1284,7 +1279,6 @@ def _rolling_sum_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
         start_col, end_col = args
         _rolling_sum_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -1304,7 +1298,6 @@ def _rolling_std_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     def process_chunk(args):
         start_col, end_col = args
         _rolling_std_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -1326,7 +1319,6 @@ def _rolling_var_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
         start_col, end_col = args
         _rolling_var_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -1346,7 +1338,6 @@ def _rolling_min_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     def process_chunk(args):
         start_col, end_col = args
         _rolling_min_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -1368,7 +1359,6 @@ def _rolling_max_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
         start_col, end_col = args
         _rolling_max_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -1384,7 +1374,6 @@ def _rolling_median_threadpool(arr: np.ndarray, window: int, min_periods: int) -
         start_col, end_col = args
         _rolling_median_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -1399,7 +1388,6 @@ def _rolling_quantile_threadpool(arr: np.ndarray, window: int, min_periods: int,
     def process_chunk(args):
         start_col, end_col = args
         _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_periods, quantile)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -1421,11 +1409,9 @@ def _rolling_sem_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
         start_col, end_col = args
         _rolling_sem_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
-
 
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
@@ -1528,7 +1514,6 @@ def _rolling_sem_dispatch(arr, window, min_periods, ddof=1):
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_sem_2d_serial(arr, window, min_periods, ddof)
     return _rolling_sem_2d(arr, window, min_periods, ddof)
-
 
 # ============================================================================
 # Wrapper functions for pandas Rolling objects

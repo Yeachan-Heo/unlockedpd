@@ -12,6 +12,7 @@ import numpy as np
 from numba import njit, prange
 import pandas as pd
 from typing import Union
+
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
 from ._threadpool import run_threadpool_chunks
 
@@ -21,7 +22,6 @@ PARALLEL_THRESHOLD = 500_000
 
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
-
 
 
 # ============================================================================
@@ -316,7 +316,6 @@ def _expanding_kurt_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
     return result
 
-
 # ============================================================================
 # Core Numba-jitted functions (SERIAL versions for small arrays)
 # ============================================================================
@@ -587,7 +586,6 @@ def _expanding_kurt_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
     return result
 
-
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
 # ============================================================================
@@ -731,7 +729,6 @@ def _expanding_count_nogil_chunk(arr, result, start_col, end_col, min_periods):
             else:
                 result[row, c] = np.nan
 
-
 # ============================================================================
 # ThreadPool + NumPy cumsum trick for ultra-fast expanding (5x+ speedup)
 # Key insight: NumPy releases GIL, so ThreadPoolExecutor achieves true parallelism
@@ -751,7 +748,6 @@ def _expanding_mean_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     def process_chunk(args):
         start_col, end_col = args
         _expanding_mean_nogil_chunk(arr, result, start_col, end_col, min_periods)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -773,7 +769,6 @@ def _expanding_sum_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
         start_col, end_col = args
         _expanding_sum_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -789,7 +784,6 @@ def _expanding_std_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
         start_col, end_col = args
         _expanding_std_nogil_chunk(arr, result, start_col, end_col, min_periods, ddof)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -804,7 +798,6 @@ def _expanding_var_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
     def process_chunk(args):
         start_col, end_col = args
         _expanding_var_nogil_chunk(arr, result, start_col, end_col, min_periods, ddof)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -826,7 +819,6 @@ def _expanding_min_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
         start_col, end_col = args
         _expanding_min_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -847,11 +839,9 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
         start_col, end_col = args
         _expanding_max_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
-
 
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
@@ -930,7 +920,6 @@ def _expanding_kurt_dispatch(arr, min_periods):
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_kurt_2d_serial(arr, min_periods)
     return _expanding_kurt_2d(arr, min_periods)
-
 
 # ============================================================================
 # Wrapper functions for pandas Expanding objects

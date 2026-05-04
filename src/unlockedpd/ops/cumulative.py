@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from typing import Union
 from numba import njit
+
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from ._threadpool import run_threadpool_chunks
 
@@ -18,7 +19,6 @@ from ._threadpool import run_threadpool_chunks
 # Based on benchmarking: parallel helps when n_cols >= 200 and n_rows >= 5000
 MIN_COLS_FOR_PARALLEL = 200
 MIN_ROWS_FOR_PARALLEL = 5000
-
 
 
 # ============================================================================
@@ -114,7 +114,6 @@ def _cummax_nogil_chunk(arr, result, start_col, end_col):
                     cummax = val
                 result[row, c] = cummax
 
-
 # ============================================================================
 # Core parallel implementations using ThreadPoolExecutor + nogil kernels
 # ============================================================================
@@ -128,7 +127,6 @@ def _cumsum_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     def process_chunk(args):
         start_col, end_col = args
         _cumsum_nogil_chunk(arr, result, start_col, end_col)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -145,7 +143,6 @@ def _cumprod_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
         start_col, end_col = args
         _cumprod_nogil_chunk(arr, result, start_col, end_col)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -160,7 +157,6 @@ def _cummin_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     def process_chunk(args):
         start_col, end_col = args
         _cummin_nogil_chunk(arr, result, start_col, end_col)
-
 
     run_threadpool_chunks(n_cols, process_chunk)
 
@@ -177,11 +173,9 @@ def _cummax_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
         start_col, end_col = args
         _cummax_nogil_chunk(arr, result, start_col, end_col)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
-
 
 # ============================================================================
 # Dispatch functions (choose parallel vs pandas based on shape)
@@ -196,7 +190,6 @@ def _should_use_parallel(arr):
     """
     n_rows, n_cols = arr.shape
     return n_cols >= MIN_COLS_FOR_PARALLEL and n_rows >= MIN_ROWS_FOR_PARALLEL
-
 
 # ============================================================================
 # Wrapper functions for pandas DataFrame methods

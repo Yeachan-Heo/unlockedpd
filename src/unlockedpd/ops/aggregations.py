@@ -12,13 +12,13 @@ import numpy as np
 import pandas as pd
 from typing import Union
 from numba import njit, prange
+
 from .._compat import get_numeric_columns_fast, ensure_float64
 from ._threadpool import run_threadpool_chunks
 
 # Thresholds for parallel execution dispatch
 PARALLEL_THRESHOLD = 500_000      # Use parallel prange above this
 THREADPOOL_THRESHOLD = 10_000_000 # Use ThreadPool+nogil above this
-
 
 
 # ============================================================================
@@ -109,7 +109,6 @@ def _sum_threadpool(arr, skipna):
         start_col, end_col = args
         _sum_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -129,7 +128,6 @@ def _sum_dispatch(arr, skipna, axis):
         result = _sum_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # MEAN OPERATION
@@ -213,7 +211,6 @@ def _mean_threadpool(arr, skipna):
         start_col, end_col = args
         _mean_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -233,7 +230,6 @@ def _mean_dispatch(arr, skipna, axis):
         result = _mean_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # STD/VAR OPERATIONS (Welford's Algorithm for Numerical Stability)
@@ -350,7 +346,6 @@ def _var_threadpool(arr, skipna, ddof):
         start_col, end_col = args
         _var_nogil_chunk(arr, result, start_col, end_col, skipna, ddof)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -455,7 +450,6 @@ def _std_threadpool(arr, skipna, ddof):
         start_col, end_col = args
         _std_nogil_chunk(arr, result, start_col, end_col, skipna, ddof)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -475,7 +469,6 @@ def _std_dispatch(arr, skipna, axis, ddof):
         result = _std_serial(arr, skipna, ddof)
 
     return result
-
 
 # ============================================================================
 # MIN OPERATION
@@ -583,7 +576,6 @@ def _min_threadpool(arr, skipna):
         start_col, end_col = args
         _min_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -603,7 +595,6 @@ def _min_dispatch(arr, skipna, axis):
         result = _min_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # MAX OPERATION
@@ -711,7 +702,6 @@ def _max_threadpool(arr, skipna):
         start_col, end_col = args
         _max_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -731,7 +721,6 @@ def _max_dispatch(arr, skipna, axis):
         result = _max_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # MEDIAN OPERATION
@@ -856,7 +845,6 @@ def _median_threadpool(arr, skipna):
         start_col, end_col = args
         _median_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -876,7 +864,6 @@ def _median_dispatch(arr, skipna, axis):
         result = _median_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # PROD OPERATION
@@ -975,7 +962,6 @@ def _prod_threadpool(arr, skipna):
         start_col, end_col = args
         _prod_nogil_chunk(arr, result, start_col, end_col, skipna)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -995,7 +981,6 @@ def _prod_dispatch(arr, skipna, axis):
         result = _prod_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # QUANTILE OPERATION
@@ -1080,7 +1065,6 @@ def _quantile_threadpool(arr, q):
         start_col, end_col = args
         _quantile_nogil_chunk(arr, result, start_col, end_col, q)
 
-
     run_threadpool_chunks(n_cols, process_chunk)
 
     return result
@@ -1100,7 +1084,6 @@ def _quantile_dispatch(arr, q, axis):
         result = _quantile_serial(arr, q)
 
     return result
-
 
 # ============================================================================
 # ALL OPERATION
@@ -1164,7 +1147,6 @@ def _all_dispatch(arr, skipna, axis):
 
     return result
 
-
 # ============================================================================
 # ANY OPERATION
 # ============================================================================
@@ -1225,7 +1207,6 @@ def _any_dispatch(arr, skipna, axis):
         result = _any_serial(arr, skipna)
 
     return result
-
 
 # ============================================================================
 # PANDAS WRAPPER FUNCTIONS
@@ -1663,7 +1644,6 @@ def optimized_any(self, axis=0, bool_only=None, skipna=True, **kwargs):
         return pd.Series(result, index=numeric_cols)
     else:
         return pd.Series(result, index=self.index)
-
 
 # ============================================================================
 # PATCH REGISTRATION

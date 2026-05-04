@@ -2,8 +2,7 @@
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Callable
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 
 DEFAULT_THREADPOOL_WORKER_CAP = 32
