@@ -40,6 +40,8 @@ def test_resource_profile_import_smoke_schema(tmp_path):
         assert "speedup" in case["summary"]
         assert "cpu_seconds_ratio" in case["summary"]
         assert "rss_ratio" in case["summary"]
+        assert "speedup_weighted_resource_limit" in case["summary"]
+        assert "pass_speedup_weighted_resource_budget" in case["summary"]
         assert {repeat["implementation"] for repeat in case["repeats"]} == {
             "pandas",
             "optimized",

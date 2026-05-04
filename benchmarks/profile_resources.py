@@ -598,6 +598,13 @@ def _summarize(
     resource_ok = (cpu_ratio is None or cpu_ratio <= max_cpu) and (
         rss_ratio is None or rss_ratio <= max_memory
     )
+    speedup_weighted_resource_limit = (
+        speedup * 1.2 if speedup is not None and math.isfinite(speedup) else None
+    )
+    speedup_weighted_resource_ok = speedup_weighted_resource_limit is None or (
+        (cpu_ratio is None or cpu_ratio <= speedup_weighted_resource_limit)
+        and (rss_ratio is None or rss_ratio <= speedup_weighted_resource_limit)
+    )
     return {
         "pandas_wall_seconds": pandas_wall,
         "optimized_wall_seconds": opt_wall,
@@ -608,6 +615,8 @@ def _summarize(
         if len(selected_paths) == 1
         else selected_paths,
         "pass_resource_budget": bool(resource_ok),
+        "speedup_weighted_resource_limit": speedup_weighted_resource_limit,
+        "pass_speedup_weighted_resource_budget": bool(speedup_weighted_resource_ok),
         "pass_parallelism_gate": bool(
             (not parallelism_gate) or selected_parallel or not resource_ok
         ),
