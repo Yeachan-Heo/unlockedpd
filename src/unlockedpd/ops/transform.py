@@ -5,7 +5,7 @@ with SHAPE-ADAPTIVE parallelization - automatically chooses row vs column parall
 based on array dimensions for maximum CPU utilization.
 """
 import numpy as np
-from numba import njit, prange
+from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
 
 from .._compat import (
@@ -15,7 +15,7 @@ from .._compat import (
     wrap_result_fast,
     ensure_float64,
 )
-from .._resources import record_dispatch_path
+from .._resources import record_dispatch_path, resolve_threadpool_workers
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it.
@@ -28,6 +28,7 @@ PARALLEL_THRESHOLD = 500_000
 # - 1000 rows with 64 CPUs = ~16 rows per CPU (borderline)
 # - 10000 rows with 64 CPUs = ~156 rows per CPU (good)
 MIN_ROWS_FOR_PARALLEL = 2000
+AXIS1_TRANSFORM_THREAD_CAP = 8
 
 
 def _normalize_axis(axis) -> int:
@@ -63,6 +64,43 @@ def _pct_change_axis1_primitives(
     )
     record_dispatch_path("pandas_primitives")
     return df / shifted - 1.0
+
+
+def _real_numeric_values(df: pd.DataFrame):
+    """Return real numeric values suitable for float64 transform kernels."""
+
+    if not is_all_numeric(df):
+        return None
+    arr = df.values
+    if arr.dtype.kind not in "biuf":
+        return None
+    return ensure_float64(arr)
+
+
+def _bounded_axis1_transform(kernel, arr: np.ndarray, periods: int) -> np.ndarray:
+    """Run row-parallel axis=1 transform kernels with bounded CPU fan-out."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        min(configured, AXIS1_TRANSFORM_THREAD_CAP)
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="transform",
+            operation_cap=AXIS1_TRANSFORM_THREAD_CAP,
+            memory_bandwidth_cap=AXIS1_TRANSFORM_THREAD_CAP,
+            cap=AXIS1_TRANSFORM_THREAD_CAP,
+        )
+    )
+    target_threads = max(1, min(int(target_threads), arr.shape[0]))
+    current_threads = get_num_threads()
+
+    record_dispatch_path("parallel_numba")
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    return kernel(arr, periods)
 
 
 # ============================================================================
@@ -147,6 +185,40 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
                         result[row, col] = np.inf if new_val > 0 else -np.inf
                 else:
                     result[row, col] = (new_val - old_val) / old_val
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _pct_change_axis1_no_fill_parallel(
+    arr: np.ndarray, periods: int = 1
+) -> np.ndarray:
+    """Compute pct_change(axis=1, fill_method=None) across contiguous rows."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+
+    if periods > 0:
+        if periods >= n_cols:
+            for row in prange(n_rows):
+                for col in range(n_cols):
+                    result[row, col] = np.nan
+        else:
+            for row in prange(n_rows):
+                for col in range(periods):
+                    result[row, col] = np.nan
+                for col in range(periods, n_cols):
+                    result[row, col] = arr[row, col] / arr[row, col - periods] - 1.0
+    else:
+        abs_periods = -periods
+        if abs_periods >= n_cols:
+            for row in prange(n_rows):
+                for col in range(n_cols):
+                    result[row, col] = np.nan
+        else:
+            for row in prange(n_rows):
+                for col in range(n_cols - abs_periods):
+                    result[row, col] = arr[row, col] / arr[row, col + abs_periods] - 1.0
+                for col in range(n_cols - abs_periods, n_cols):
+                    result[row, col] = np.nan
     return result
 
 
@@ -530,8 +602,21 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
     axis_arg = kwargs.pop("axis", 0)
     axis = _normalize_axis(axis_arg)
     if axis == 1:
-        if fill_method is None and isinstance(periods, int) and is_all_numeric(df):
-            return _pct_change_axis1_primitives(df, periods, **kwargs)
+        if fill_method is None and isinstance(periods, int):
+            arr = _real_numeric_values(df)
+            if (
+                arr is not None
+                and periods != 0
+                and not kwargs
+                and arr.size >= PARALLEL_THRESHOLD
+                and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
+            ):
+                result = _bounded_axis1_transform(
+                    _pct_change_axis1_no_fill_parallel, arr, periods
+                )
+                return wrap_result_fast(result, df)
+            if arr is not None:
+                return _pct_change_axis1_primitives(df, periods, **kwargs)
         return _call_original_dataframe_method(
             df,
             "pct_change",
@@ -653,9 +738,6 @@ def apply_transform_patches():
     def _patched_diff(self, periods=1, axis=0):
         if not config.enabled:
             return original_diff(self, periods=periods, axis=axis)
-        if _normalize_axis(axis) == 1 and isinstance(periods, int) and periods != 0:
-            record_dispatch_path("pandas_primitives")
-            return self - original_shift(self, periods=periods, axis=axis)
         try:
             return optimized_diff(self, periods=periods, axis=axis)
         except Exception as exc:

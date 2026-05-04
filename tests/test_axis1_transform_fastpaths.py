@@ -6,6 +6,7 @@ import pandas.testing as tm
 
 import unlockedpd
 from unlockedpd._resources import get_last_selected_path
+from unlockedpd.ops import transform as transform_ops
 
 
 def _wide_frame(rows=512, cols=512):
@@ -97,6 +98,30 @@ def test_axis1_pct_change_fill_none_uses_pandas_primitives_path():
 
     tm.assert_frame_equal(result, expected)
     assert get_last_selected_path() == "pandas_primitives"
+
+
+def test_axis1_pct_change_parallel_numba_fastpath_matches_pandas(monkeypatch):
+    df = _wide_frame(8, 6)
+    df.iloc[0, 0] = 0.0
+    df.iloc[1, 1] = np.nan
+    df.iloc[2, 2] = np.inf
+
+    monkeypatch.setattr(transform_ops, "PARALLEL_THRESHOLD", 1)
+    monkeypatch.setattr(transform_ops, "MIN_ROWS_FOR_PARALLEL", 1)
+
+    operations = [
+        {"axis": 1, "fill_method": None},
+        {"axis": 1, "periods": -2, "fill_method": None},
+        {"axis": 1, "periods": 8, "fill_method": None},
+    ]
+
+    for kwargs in operations:
+        with unlockedpd._PatchRegistry.temporarily_unpatched():
+            expected = df.pct_change(**kwargs)
+        result = df.pct_change(**kwargs)
+
+        tm.assert_frame_equal(result, expected)
+        assert get_last_selected_path() == "parallel_numba"
 
 
 def test_axis1_shift_fill_none_uses_no_fill_value_native_path():

@@ -13,6 +13,9 @@ import numpy as np
 import pandas as pd
 from numba import get_num_threads, njit, prange, set_num_threads
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import ctypes
+import glob
 from .._compat import get_numeric_columns_fast, ensure_float64
 from .._resources import (
     assert_memory_budget,
@@ -30,6 +33,9 @@ DENSE_AXIS0_THREAD_CAP = 32
 AXIS1_AGG_THREAD_CAP = 32
 AXIS1_DENSE_THREAD_CAP = 16
 AXIS1_DENSE_MINMAX_THREAD_CAP = 32
+AXIS0_BLAS_THREAD_CAP = 8
+_OPENBLAS_CONTROLS = None
+_OPENBLAS_CONTROLS_LOOKED_UP = False
 
 
 def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
@@ -63,6 +69,72 @@ def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
         return None
 
     record_dispatch_path("numpy_vectorized")
+    return result
+
+
+def _openblas_thread_controls():
+    """Return scipy-openblas thread control functions when NumPy exposes them."""
+
+    global _OPENBLAS_CONTROLS, _OPENBLAS_CONTROLS_LOOKED_UP
+    if _OPENBLAS_CONTROLS_LOOKED_UP:
+        return _OPENBLAS_CONTROLS
+
+    _OPENBLAS_CONTROLS_LOOKED_UP = True
+    try:
+        numpy_libs = Path(np.__file__).resolve().parents[1] / "numpy.libs"
+        candidates = glob.glob(str(numpy_libs / "*openblas*.so"))
+        for candidate in candidates:
+            lib = ctypes.CDLL(candidate)
+            set_threads = getattr(lib, "scipy_openblas_set_num_threads64_", None)
+            get_threads = getattr(lib, "scipy_openblas_get_num_threads64_", None)
+            if set_threads is None or get_threads is None:
+                continue
+            set_threads.argtypes = [ctypes.c_int]
+            set_threads.restype = None
+            get_threads.argtypes = []
+            get_threads.restype = ctypes.c_int
+            _OPENBLAS_CONTROLS = (get_threads, set_threads)
+            return _OPENBLAS_CONTROLS
+    except Exception:
+        _OPENBLAS_CONTROLS = None
+
+    return None
+
+
+def _axis0_blas_no_missing_reduction(arr, op, skipna):
+    """Use bounded OpenBLAS GEMV for mid-sized dense axis=0 sum/mean."""
+
+    if (
+        arr.size < PARALLEL_THRESHOLD
+        or arr.size >= DENSE_AXIS0_BLOCK_THRESHOLD
+        or arr.shape[0] == 0
+        or op not in {"sum", "mean"}
+    ):
+        return None
+
+    controls = _openblas_thread_controls()
+    if controls is None:
+        return None
+    get_threads, set_threads = controls
+
+    old_threads = max(1, int(get_threads()))
+    target_threads = max(1, min(AXIS0_BLAS_THREAD_CAP, old_threads))
+    ones = np.ones(arr.shape[0], dtype=np.float64)
+
+    try:
+        if target_threads != old_threads:
+            set_threads(target_threads)
+        result = arr.T @ ones
+    finally:
+        if target_threads != old_threads:
+            set_threads(old_threads)
+
+    if op == "mean":
+        result *= 1.0 / arr.shape[0]
+
+    record_dispatch_path("numpy_vectorized")
+    if skipna and np.isnan(result).any() and np.isnan(arr).any():
+        return None
     return result
 
 
@@ -749,6 +821,9 @@ def _sum_dispatch(arr, skipna, axis):
             )
         arr = arr.T
     else:
+        fast = _axis0_blas_no_missing_reduction(arr, "sum", skipna)
+        if fast is not None:
+            return fast
         fast = _dense_axis0_no_missing_reduction(arr, "sum", skipna)
         if fast is not None:
             return fast
@@ -878,6 +953,9 @@ def _mean_dispatch(arr, skipna, axis):
             )
         arr = arr.T
     else:
+        fast = _axis0_blas_no_missing_reduction(arr, "mean", skipna)
+        if fast is not None:
+            return fast
         fast = _dense_axis0_no_missing_reduction(arr, "mean", skipna)
         if fast is not None:
             return fast
