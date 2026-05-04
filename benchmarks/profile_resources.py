@@ -785,7 +785,7 @@ def _summarize(
     )
     selected_paths = sorted({str(r.get("selected_path", "unknown")) for r in opt})
     selected_parallel = any(
-        p in {"threadpool", "parallel_numba", "numpy_vectorized"}
+        p in {"threadpool", "parallel_numba", "numpy_vectorized", "native_c"}
         for p in selected_paths
     )
     resource_ok = (cpu_ratio is None or cpu_ratio <= max_cpu) and (

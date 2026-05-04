@@ -16,6 +16,7 @@ from .._compat import (
     ensure_float64,
 )
 from .._resources import record_dispatch_path, resolve_threadpool_workers
+from ._axis1_native import native_axis1_transform
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it.
@@ -29,6 +30,8 @@ PARALLEL_THRESHOLD = 500_000
 # - 10000 rows with 64 CPUs = ~156 rows per CPU (good)
 MIN_ROWS_FOR_PARALLEL = 2000
 AXIS1_TRANSFORM_THREAD_CAP = 8
+AXIS1_NATIVE_DIFF_THREAD_CAP = 8
+AXIS1_NATIVE_PCT_THREAD_CAP = 8
 
 
 def _normalize_axis(axis) -> int:
@@ -101,6 +104,25 @@ def _bounded_axis1_transform(kernel, arr: np.ndarray, periods: int) -> np.ndarra
     if target_threads != current_threads:
         set_num_threads(target_threads)
     return kernel(arr, periods)
+
+
+def _axis1_native_transform(arr: np.ndarray, periods: int, op: str):
+    """Run optional OpenMP native axis=1 kernels within a bounded thread cap."""
+
+    thread_cap = (
+        AXIS1_NATIVE_DIFF_THREAD_CAP if op == "diff" else AXIS1_NATIVE_PCT_THREAD_CAP
+    )
+    threads = resolve_threadpool_workers(
+        arr.shape[0],
+        operation="transform",
+        operation_cap=thread_cap,
+        memory_bandwidth_cap=thread_cap,
+        cap=thread_cap,
+    )
+    result = native_axis1_transform(arr, periods, op=op, threads=threads)
+    if result is not None:
+        record_dispatch_path("native_c")
+    return result
 
 
 # ============================================================================
@@ -536,6 +558,15 @@ def optimized_diff(df, periods=1, axis=0):
     axis = _normalize_axis(axis)
     if axis == 1:
         if isinstance(periods, int) and periods != 0:
+            arr = _real_numeric_values(df)
+            if (
+                arr is not None
+                and arr.size >= PARALLEL_THRESHOLD
+                and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
+            ):
+                result = _axis1_native_transform(arr, periods, "diff")
+                if result is not None:
+                    return wrap_result_fast(result, df)
             shifted = _call_original_dataframe_method(
                 df, "shift", periods=periods, axis=axis
             )
@@ -611,6 +642,9 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
                 and arr.size >= PARALLEL_THRESHOLD
                 and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
             ):
+                result = _axis1_native_transform(arr, periods, "pct")
+                if result is not None:
+                    return wrap_result_fast(result, df)
                 result = _bounded_axis1_transform(
                     _pct_change_axis1_no_fill_parallel, arr, periods
                 )
