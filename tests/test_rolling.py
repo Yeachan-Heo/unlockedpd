@@ -134,6 +134,26 @@ class TestRollingSum:
 
         pd.testing.assert_frame_equal(result, expected)
 
+    def test_large_rolling_sum_uses_rowblock_parallel_path(self):
+        """Large rolling sum keeps pandas semantics on the row-block path."""
+        import unlockedpd
+        from unlockedpd._resources import get_last_selected_path
+
+        rng = np.random.default_rng(321)
+        values = rng.standard_normal((1024, 512))
+        values[10, 7] = np.nan
+        values[20, 9] = np.inf
+        df = pd.DataFrame(values)
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(20, min_periods=10).sum()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(20, min_periods=10).sum()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-12, atol=1e-12)
+        assert get_last_selected_path() == "parallel_numba"
+
 
 class TestRollingStd:
     """Tests for rolling().std()"""

@@ -118,6 +118,26 @@ class TestExpandingOptimized:
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10, atol=1e-10)
         assert get_last_selected_path() == "parallel_numba"
 
+    def test_large_expanding_sum_uses_bounded_parallel_path(self):
+        """Large expanding sum uses the row-block prefix path."""
+        import unlockedpd
+        from unlockedpd._resources import get_last_selected_path
+
+        rng = np.random.default_rng(456)
+        values = rng.standard_normal((1024, 512))
+        values[10, 7] = np.nan
+        values[20, 9] = np.inf
+        df = pd.DataFrame(values)
+
+        unlockedpd.config.enabled = False
+        expected = df.expanding(min_periods=10).sum()
+
+        unlockedpd.config.enabled = True
+        result = df.expanding(min_periods=10).sum()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10, atol=1e-10)
+        assert get_last_selected_path() == "parallel_numba"
+
     def test_expanding_mean_inf_semantics(self):
         """Expanding mean treats inf like pandas for moment calculations."""
         import unlockedpd

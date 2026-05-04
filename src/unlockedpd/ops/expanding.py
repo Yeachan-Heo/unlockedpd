@@ -28,6 +28,8 @@ PARALLEL_THRESHOLD = 500_000
 
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
+EXPANDING_ROWBLOCK_THREAD_CAP = 16
+EXPANDING_ROWBLOCK_MIN_BLOCK_ROWS = 128
 
 
 def _wrap_expanding_result(result, numeric_cols, numeric_df, obj):
@@ -66,6 +68,27 @@ def _bounded_numba_expanding(kernel, arr, *args, cap=8):
     if target_threads != current_threads:
         set_num_threads(target_threads)
     return kernel(arr, *args)
+
+
+def _expanding_rowblock_rows(arr: np.ndarray) -> int:
+    """Choose enough row blocks to keep capped expanding workers busy."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        configured
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="expanding",
+            operation_cap=EXPANDING_ROWBLOCK_THREAD_CAP,
+            memory_bandwidth_cap=EXPANDING_ROWBLOCK_THREAD_CAP,
+            cap=EXPANDING_ROWBLOCK_THREAD_CAP,
+        )
+    )
+    block_rows = arr.shape[0] // max(1, int(target_threads) * 16)
+    return max(EXPANDING_ROWBLOCK_MIN_BLOCK_ROWS, min(2048, block_rows or 1))
 
 
 # ============================================================================
@@ -115,6 +138,128 @@ def _expanding_mean_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
             if count >= min_periods:
                 result[row, col] = cumsum / count
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _expanding_sum_rowblocks(
+    arr: np.ndarray, min_periods: int, block_rows: int
+) -> np.ndarray:
+    """Compute expanding sum in row-major blocks with prefix block state."""
+    n_rows, n_cols = arr.shape
+    n_blocks = (n_rows + block_rows - 1) // block_rows
+    partial_sums = np.zeros((n_blocks, n_cols), dtype=np.float64)
+    partial_counts = np.zeros((n_blocks, n_cols), dtype=np.int64)
+
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        sums = np.zeros(n_cols, dtype=np.float64)
+        counts = np.zeros(n_cols, dtype=np.int64)
+        for row in range(start, end):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+        for col in range(n_cols):
+            partial_sums[block, col] = sums[col]
+            partial_counts[block, col] = counts[col]
+
+    prefix_sums = np.zeros((n_blocks, n_cols), dtype=np.float64)
+    prefix_counts = np.zeros((n_blocks, n_cols), dtype=np.int64)
+    for block in range(1, n_blocks):
+        for col in range(n_cols):
+            prefix_sums[block, col] = (
+                prefix_sums[block - 1, col] + partial_sums[block - 1, col]
+            )
+            prefix_counts[block, col] = (
+                prefix_counts[block - 1, col] + partial_counts[block - 1, col]
+            )
+
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        sums = np.empty(n_cols, dtype=np.float64)
+        counts = np.empty(n_cols, dtype=np.int64)
+        for col in range(n_cols):
+            sums[col] = prefix_sums[block, col]
+            counts[col] = prefix_counts[block, col]
+
+        for row in range(start, end):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+
+                if counts[col] >= min_periods:
+                    result[row, col] = sums[col]
+                else:
+                    result[row, col] = np.nan
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _expanding_mean_rowblocks(
+    arr: np.ndarray, min_periods: int, block_rows: int
+) -> np.ndarray:
+    """Compute expanding mean in row-major blocks with prefix block state."""
+    n_rows, n_cols = arr.shape
+    n_blocks = (n_rows + block_rows - 1) // block_rows
+    partial_sums = np.zeros((n_blocks, n_cols), dtype=np.float64)
+    partial_counts = np.zeros((n_blocks, n_cols), dtype=np.int64)
+
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        sums = np.zeros(n_cols, dtype=np.float64)
+        counts = np.zeros(n_cols, dtype=np.int64)
+        for row in range(start, end):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+        for col in range(n_cols):
+            partial_sums[block, col] = sums[col]
+            partial_counts[block, col] = counts[col]
+
+    prefix_sums = np.zeros((n_blocks, n_cols), dtype=np.float64)
+    prefix_counts = np.zeros((n_blocks, n_cols), dtype=np.int64)
+    for block in range(1, n_blocks):
+        for col in range(n_cols):
+            prefix_sums[block, col] = (
+                prefix_sums[block - 1, col] + partial_sums[block - 1, col]
+            )
+            prefix_counts[block, col] = (
+                prefix_counts[block - 1, col] + partial_counts[block - 1, col]
+            )
+
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        sums = np.empty(n_cols, dtype=np.float64)
+        counts = np.empty(n_cols, dtype=np.int64)
+        for col in range(n_cols):
+            sums[col] = prefix_sums[block, col]
+            counts[col] = prefix_counts[block, col]
+
+        for row in range(start, end):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+
+                if counts[col] >= min_periods and counts[col] > 0:
+                    result[row, col] = sums[col] / counts[col]
+                else:
+                    result[row, col] = np.nan
 
     return result
 
@@ -935,31 +1080,41 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
 
 def _expanding_sum_dispatch(arr, min_periods):
-    """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
-    if arr.size >= THREADPOOL_THRESHOLD:
+    """Dispatch to row-block parallel or serial expanding sum."""
+    if arr.size >= PARALLEL_THRESHOLD:
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="expanding",
         )
-        return _expanding_sum_threadpool(arr, min_periods)
+        return _bounded_numba_expanding(
+            _expanding_sum_rowblocks,
+            arr,
+            min_periods,
+            _expanding_rowblock_rows(arr),
+            cap=EXPANDING_ROWBLOCK_THREAD_CAP,
+        )
     if arr.size < PARALLEL_THRESHOLD:
         record_dispatch_path("serial_numba")
         return _expanding_sum_2d_serial(arr, min_periods)
-    return _bounded_numba_expanding(_expanding_sum_2d, arr, min_periods)
 
 
 def _expanding_mean_dispatch(arr, min_periods):
-    """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
-    if arr.size >= THREADPOOL_THRESHOLD:
+    """Dispatch to row-block parallel or serial expanding mean."""
+    if arr.size >= PARALLEL_THRESHOLD:
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="expanding",
         )
-        return _expanding_mean_threadpool(arr, min_periods)
+        return _bounded_numba_expanding(
+            _expanding_mean_rowblocks,
+            arr,
+            min_periods,
+            _expanding_rowblock_rows(arr),
+            cap=EXPANDING_ROWBLOCK_THREAD_CAP,
+        )
     if arr.size < PARALLEL_THRESHOLD:
         record_dispatch_path("serial_numba")
         return _expanding_mean_2d_serial(arr, min_periods)
-    return _bounded_numba_expanding(_expanding_mean_2d, arr, min_periods)
 
 
 def _expanding_std_dispatch(arr, min_periods, ddof=1):

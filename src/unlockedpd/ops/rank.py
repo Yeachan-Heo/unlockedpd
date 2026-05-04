@@ -24,6 +24,7 @@ NA_OPTION_MAP = {"keep": 0, "top": 1, "bottom": 2}
 # Threshold for parallel vs serial execution
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
 PARALLEL_THRESHOLD = 500_000
+RANK_THREAD_CAP = 32
 
 
 def _bounded_numba_rank(kernel, arr, *args):
@@ -35,7 +36,13 @@ def _bounded_numba_rank(kernel, arr, *args):
     target_threads = (
         configured
         if configured > 0
-        else resolve_threadpool_workers(arr.shape[0], operation="rank")
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="rank",
+            operation_cap=RANK_THREAD_CAP,
+            memory_bandwidth_cap=RANK_THREAD_CAP,
+            cap=RANK_THREAD_CAP,
+        )
     )
     current_threads = get_num_threads()
     target_threads = max(1, int(target_threads))
@@ -761,7 +768,7 @@ def optimized_rank(
             if use_parallel:
                 if (
                     arr.shape[0] >= 512
-                    and arr.shape[1] >= 1024
+                    and arr.shape[1] >= 128
                     and not np.isnan(arr).any()
                 ):
                     result = _bounded_numba_rank(

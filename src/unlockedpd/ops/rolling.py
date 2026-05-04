@@ -24,9 +24,7 @@ from .._resources import (
     use_threadpool_path,
 )
 from ._welford import (
-    rolling_std_welford_parallel,
     rolling_std_welford_serial,
-    rolling_var_welford_parallel,
     rolling_var_welford_serial,
 )
 
@@ -35,6 +33,12 @@ PARALLEL_THRESHOLD = 500_000
 
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
+
+# Row-block kernels scan DataFrames in row-major order and parallelize across
+# independent row ranges.  They avoid the cache-unfriendly column-strided access
+# pattern of the older column-chunk ThreadPool path for rolling sum/mean.
+ROLLING_ROWBLOCK_THREAD_CAP = 16
+ROLLING_ROWBLOCK_MIN_BLOCK_ROWS = 128
 
 
 def _normalize_axis(axis) -> int:
@@ -116,6 +120,29 @@ def _bounded_numba_rolling(kernel, arr, *args, cap=8):
     if target_threads != current_threads:
         set_num_threads(target_threads)
     return kernel(arr, *args)
+
+
+def _rolling_rowblock_rows(arr: np.ndarray) -> int:
+    """Choose enough row blocks to keep capped Numba workers busy."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        configured
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="rolling",
+            operation_cap=ROLLING_ROWBLOCK_THREAD_CAP,
+            memory_bandwidth_cap=ROLLING_ROWBLOCK_THREAD_CAP,
+            cap=ROLLING_ROWBLOCK_THREAD_CAP,
+        )
+    )
+    # Keep at least ~16 blocks per worker for load balancing while avoiding
+    # thousands of tiny ranges on very tall frames.
+    block_rows = arr.shape[0] // max(1, int(target_threads) * 16)
+    return max(ROLLING_ROWBLOCK_MIN_BLOCK_ROWS, min(2048, block_rows or 1))
 
 
 # ============================================================================
@@ -210,6 +237,175 @@ def _rolling_mean_2d_centered(
 
             if count >= min_periods:
                 result[row, col] = cumsum / count
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _rolling_sum_rowblocks(
+    arr: np.ndarray, window: int, min_periods: int, block_rows: int
+) -> np.ndarray:
+    """Compute rolling sum in row-major blocks for cache-local large frames."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    n_blocks = (n_rows + block_rows - 1) // block_rows
+
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        init_start = start - window + 1
+        if init_start < 0:
+            init_start = 0
+
+        sums = np.zeros(n_cols, dtype=np.float64)
+        counts = np.zeros(n_cols, dtype=np.int64)
+
+        for row in range(init_start, start):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+
+        for row in range(start, end):
+            remove_row = row - window
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+
+                if remove_row >= init_start:
+                    old_val = arr[remove_row, col]
+                    if np.isfinite(old_val):
+                        sums[col] -= old_val
+                        counts[col] -= 1
+
+                if counts[col] >= min_periods:
+                    result[row, col] = sums[col]
+                else:
+                    result[row, col] = np.nan
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _rolling_mean_rowblocks(
+    arr: np.ndarray, window: int, min_periods: int, block_rows: int
+) -> np.ndarray:
+    """Compute rolling mean in row-major blocks for cache-local large frames."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    n_blocks = (n_rows + block_rows - 1) // block_rows
+
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        init_start = start - window + 1
+        if init_start < 0:
+            init_start = 0
+
+        sums = np.zeros(n_cols, dtype=np.float64)
+        counts = np.zeros(n_cols, dtype=np.int64)
+
+        for row in range(init_start, start):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+
+        for row in range(start, end):
+            remove_row = row - window
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    sums[col] += val
+                    counts[col] += 1
+
+                if remove_row >= init_start:
+                    old_val = arr[remove_row, col]
+                    if np.isfinite(old_val):
+                        sums[col] -= old_val
+                        counts[col] -= 1
+
+                if counts[col] >= min_periods and counts[col] > 0:
+                    result[row, col] = sums[col] / counts[col]
+                else:
+                    result[row, col] = np.nan
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _rolling_moment_rowblocks(
+    arr: np.ndarray,
+    window: int,
+    min_periods: int,
+    ddof: int,
+    block_rows: int,
+    sqrt_result: bool,
+) -> np.ndarray:
+    """Compute rolling variance/std in row-major blocks using Welford state."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+    n_blocks = (n_rows + block_rows - 1) // block_rows
+
+    for block in prange(n_blocks):
+        start = block * block_rows
+        end = min(n_rows, start + block_rows)
+        init_start = start - window + 1
+        if init_start < 0:
+            init_start = 0
+
+        counts = np.zeros(n_cols, dtype=np.int64)
+        means = np.zeros(n_cols, dtype=np.float64)
+        m2_values = np.zeros(n_cols, dtype=np.float64)
+
+        for row in range(init_start, start):
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    counts[col] += 1
+                    delta = val - means[col]
+                    means[col] += delta / counts[col]
+                    delta2 = val - means[col]
+                    m2_values[col] += delta * delta2
+
+        for row in range(start, end):
+            remove_row = row - window
+            for col in range(n_cols):
+                val = arr[row, col]
+                if np.isfinite(val):
+                    counts[col] += 1
+                    delta = val - means[col]
+                    means[col] += delta / counts[col]
+                    delta2 = val - means[col]
+                    m2_values[col] += delta * delta2
+
+                if remove_row >= init_start:
+                    old_val = arr[remove_row, col]
+                    if np.isfinite(old_val):
+                        counts[col] -= 1
+                        if counts[col] > 0:
+                            delta = old_val - means[col]
+                            means[col] -= delta / counts[col]
+                            delta2 = old_val - means[col]
+                            m2_values[col] -= delta * delta2
+                        else:
+                            means[col] = 0.0
+                            m2_values[col] = 0.0
+
+                if counts[col] >= min_periods and counts[col] > ddof:
+                    variance = m2_values[col] / (counts[col] - ddof)
+                    if variance < 0.0 and variance > -1e-12:
+                        variance = 0.0
+                    if sqrt_result:
+                        result[row, col] = np.sqrt(variance)
+                    else:
+                        result[row, col] = variance
+                else:
+                    result[row, col] = np.nan
 
     return result
 
@@ -1574,50 +1770,76 @@ def _rolling_sem_threadpool(
 
 
 def _rolling_sum_dispatch(arr, window, min_periods):
-    """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
-    if arr.size >= THREADPOOL_THRESHOLD:
+    """Dispatch to row-block parallel or serial rolling sum."""
+    if arr.size >= PARALLEL_THRESHOLD:
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="rolling",
         )
-        return _rolling_sum_threadpool(arr, window, min_periods)
+        return _bounded_numba_rolling(
+            _rolling_sum_rowblocks,
+            arr,
+            window,
+            min_periods,
+            _rolling_rowblock_rows(arr),
+            cap=ROLLING_ROWBLOCK_THREAD_CAP,
+        )
     if arr.size < PARALLEL_THRESHOLD:
         record_dispatch_path("serial_numba")
         return _rolling_sum_2d_serial(arr, window, min_periods)
-    return _bounded_numba_rolling(_rolling_sum_2d, arr, window, min_periods, cap=8)
 
 
 def _rolling_mean_dispatch(arr, window, min_periods):
-    """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
-    if arr.size >= THREADPOOL_THRESHOLD:
+    """Dispatch to row-block parallel or serial rolling mean."""
+    if arr.size >= PARALLEL_THRESHOLD:
         assert_memory_budget(
             simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
             operation="rolling",
         )
-        return _rolling_mean_threadpool(arr, window, min_periods)
+        return _bounded_numba_rolling(
+            _rolling_mean_rowblocks,
+            arr,
+            window,
+            min_periods,
+            _rolling_rowblock_rows(arr),
+            cap=ROLLING_ROWBLOCK_THREAD_CAP,
+        )
     if arr.size < PARALLEL_THRESHOLD:
         record_dispatch_path("serial_numba")
         return _rolling_mean_2d_serial(arr, window, min_periods)
-    return _bounded_numba_rolling(_rolling_mean_2d, arr, window, min_periods, cap=8)
 
 
 def _rolling_std_dispatch(arr, window, min_periods, ddof=1):
-    """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
+    """Dispatch to row-block parallel or serial rolling std."""
     if arr.size < PARALLEL_THRESHOLD:
         record_dispatch_path("serial_numba")
         return rolling_std_welford_serial(arr, window, min_periods, ddof)
     return _bounded_numba_rolling(
-        rolling_std_welford_parallel, arr, window, min_periods, ddof, cap=8
+        _rolling_moment_rowblocks,
+        arr,
+        window,
+        min_periods,
+        ddof,
+        _rolling_rowblock_rows(arr),
+        True,
+        cap=ROLLING_ROWBLOCK_THREAD_CAP,
     )
 
 
 def _rolling_var_dispatch(arr, window, min_periods, ddof=1):
-    """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
+    """Dispatch to row-block parallel or serial rolling variance."""
     if arr.size < PARALLEL_THRESHOLD:
         record_dispatch_path("serial_numba")
         return rolling_var_welford_serial(arr, window, min_periods, ddof)
     return _bounded_numba_rolling(
-        rolling_var_welford_parallel, arr, window, min_periods, ddof, cap=8
+        _rolling_moment_rowblocks,
+        arr,
+        window,
+        min_periods,
+        ddof,
+        _rolling_rowblock_rows(arr),
+        False,
+        cap=ROLLING_ROWBLOCK_THREAD_CAP,
     )
 
 
