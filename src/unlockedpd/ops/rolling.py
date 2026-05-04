@@ -15,7 +15,7 @@ import pandas as pd
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
+from .._compat import get_numeric_columns_fast, wrap_result, wrap_result_fast, ensure_float64
 from .._resources import (
     assert_memory_budget,
     record_dispatch_path,
@@ -35,6 +35,44 @@ PARALLEL_THRESHOLD = 500_000
 
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
+
+
+def _normalize_axis(axis) -> int:
+    if axis in (0, "index", None):
+        return 0
+    if axis in (1, "columns"):
+        return 1
+    raise ValueError(f"No axis named {axis!r}")
+
+
+def _rolling_axis(rolling_obj) -> int:
+    return _normalize_axis(getattr(rolling_obj, "axis", 0))
+
+
+def _window_length(obj: pd.DataFrame, axis: int) -> int:
+    return obj.shape[1] if axis == 1 else len(obj)
+
+
+def _all_nan_result(obj: pd.DataFrame) -> pd.DataFrame:
+    return obj.astype(float) * np.nan
+
+
+def _axis1_numeric_array(obj: pd.DataFrame) -> np.ndarray:
+    """Return a float64 array for axis=1 kernels or raise to pandas fallback.
+
+    Row-wise rolling windows depend on the physical column positions.  Dropping
+    non-numeric columns would change window membership, so mixed-dtype axis=1
+    rolling is intentionally delegated to pandas.
+    """
+
+    numeric_cols, numeric_df = get_numeric_columns_fast(obj)
+    if len(numeric_cols) != obj.shape[1]:
+        raise TypeError("axis=1 rolling optimization requires all-numeric DataFrame")
+    return ensure_float64(numeric_df.values)
+
+
+def _wrap_axis1_rolling_result(result_t: np.ndarray, obj: pd.DataFrame) -> pd.DataFrame:
+    return wrap_result_fast(result_t.T, obj)
 
 
 def _bounded_numba_rolling(kernel, arr, *args, cap=8):
@@ -783,7 +821,8 @@ def _rolling_count_nogil_chunk(arr, result, start_col, end_col, window, min_peri
                 old_val = arr[row - window, c]
                 if not np.isnan(old_val):
                     count -= 1
-            if count >= min_periods:
+            observations = row + 1 if row + 1 < window else window
+            if observations >= min_periods:
                 result[row, c] = float(count)
             else:
                 result[row, c] = np.nan
@@ -1156,7 +1195,8 @@ def _rolling_count_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndar
                 if not np.isnan(old_val):
                     count -= 1
 
-            if count >= min_periods:
+            observations = row + 1 if row + 1 < window else window
+            if observations >= min_periods:
                 result[row, col] = float(count)
 
     return result
@@ -1183,7 +1223,8 @@ def _rolling_count_2d_serial(
                 if not np.isnan(old_val):
                     count -= 1
 
-            if count >= min_periods:
+            observations = row + 1 if row + 1 < window else window
+            if observations >= min_periods:
                 result[row, col] = float(count)
 
     return result
@@ -1666,6 +1707,7 @@ def _make_rolling_wrapper(numba_func, numba_func_centered=None, dispatch_func=No
             rolling_obj.min_periods if rolling_obj.min_periods is not None else window
         )
         center = getattr(rolling_obj, "center", False)
+        axis = _rolling_axis(rolling_obj)
 
         # Only optimize DataFrames
         if not isinstance(obj, pd.DataFrame):
@@ -1676,11 +1718,24 @@ def _make_rolling_wrapper(numba_func, numba_func_centered=None, dispatch_func=No
             return obj.copy()
 
         # Edge case: window > len(df) - return all NaN
-        if window > len(obj):
-            if isinstance(obj, pd.DataFrame):
-                return obj.astype(float) * np.nan
+        if window > _window_length(obj, axis):
+            return _all_nan_result(obj)
+
+        if axis == 1:
+            if center and numba_func_centered is None:
+                raise TypeError("centered rolling axis=1 path is not optimized")
+            arr = _axis1_numeric_array(obj)
+            arr_t = arr.T
+            if center:
+                result_t = numba_func_centered(arr_t, window, min_periods)
+            elif dispatch_func is not None:
+                result_t = dispatch_func(arr_t, window, min_periods)
             else:
-                return obj.astype(float) * np.nan
+                result_t = numba_func(arr_t, window, min_periods)
+            return _wrap_axis1_rolling_result(result_t, obj)
+
+        if center and numba_func_centered is None:
+            raise TypeError("centered rolling path is not optimized")
 
         # Handle mixed-dtype DataFrames
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
@@ -1719,6 +1774,8 @@ def _make_rolling_std_wrapper():
         min_periods = (
             rolling_obj.min_periods if rolling_obj.min_periods is not None else window
         )
+        center = getattr(rolling_obj, "center", False)
+        axis = _rolling_axis(rolling_obj)
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1727,11 +1784,16 @@ def _make_rolling_std_wrapper():
         if obj.empty:
             return obj.copy()
 
-        if window > len(obj):
-            if isinstance(obj, pd.DataFrame):
-                return obj.astype(float) * np.nan
-            else:
-                return obj.astype(float) * np.nan
+        if window > _window_length(obj, axis):
+            return _all_nan_result(obj)
+
+        if center:
+            raise TypeError("centered rolling std path is not optimized")
+
+        if axis == 1:
+            arr = _axis1_numeric_array(obj)
+            result_t = _rolling_std_dispatch(arr.T, window, min_periods, ddof)
+            return _wrap_axis1_rolling_result(result_t, obj)
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 
@@ -1762,6 +1824,8 @@ def _make_rolling_var_wrapper():
         min_periods = (
             rolling_obj.min_periods if rolling_obj.min_periods is not None else window
         )
+        center = getattr(rolling_obj, "center", False)
+        axis = _rolling_axis(rolling_obj)
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1770,11 +1834,16 @@ def _make_rolling_var_wrapper():
         if obj.empty:
             return obj.copy()
 
-        if window > len(obj):
-            if isinstance(obj, pd.DataFrame):
-                return obj.astype(float) * np.nan
-            else:
-                return obj.astype(float) * np.nan
+        if window > _window_length(obj, axis):
+            return _all_nan_result(obj)
+
+        if center:
+            raise TypeError("centered rolling var path is not optimized")
+
+        if axis == 1:
+            arr = _axis1_numeric_array(obj)
+            result_t = _rolling_var_dispatch(arr.T, window, min_periods, ddof)
+            return _wrap_axis1_rolling_result(result_t, obj)
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 
@@ -1805,6 +1874,8 @@ def _make_rolling_median_wrapper():
         min_periods = (
             rolling_obj.min_periods if rolling_obj.min_periods is not None else window
         )
+        center = getattr(rolling_obj, "center", False)
+        axis = _rolling_axis(rolling_obj)
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1813,11 +1884,16 @@ def _make_rolling_median_wrapper():
         if obj.empty:
             return obj.copy()
 
-        if window > len(obj):
-            if isinstance(obj, pd.DataFrame):
-                return obj.astype(float) * np.nan
-            else:
-                return obj.astype(float) * np.nan
+        if window > _window_length(obj, axis):
+            return _all_nan_result(obj)
+
+        if center:
+            raise TypeError("centered rolling median path is not optimized")
+
+        if axis == 1:
+            arr = _axis1_numeric_array(obj)
+            result_t = _rolling_median_dispatch(arr.T, window, min_periods)
+            return _wrap_axis1_rolling_result(result_t, obj)
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
         if len(numeric_cols) == 0:
@@ -1846,6 +1922,8 @@ def _make_rolling_quantile_wrapper():
         min_periods = (
             rolling_obj.min_periods if rolling_obj.min_periods is not None else window
         )
+        center = getattr(rolling_obj, "center", False)
+        axis = _rolling_axis(rolling_obj)
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1854,11 +1932,18 @@ def _make_rolling_quantile_wrapper():
         if obj.empty:
             return obj.copy()
 
-        if window > len(obj):
-            if isinstance(obj, pd.DataFrame):
-                return obj.astype(float) * np.nan
-            else:
-                return obj.astype(float) * np.nan
+        if window > _window_length(obj, axis):
+            return _all_nan_result(obj)
+
+        if center:
+            raise TypeError("centered rolling quantile path is not optimized")
+
+        if axis == 1:
+            arr = _axis1_numeric_array(obj)
+            result_t = _rolling_quantile_dispatch(
+                arr.T, window, min_periods, quantile
+            )
+            return _wrap_axis1_rolling_result(result_t, obj)
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
         if len(numeric_cols) == 0:
@@ -1887,15 +1972,22 @@ def _make_rolling_sem_wrapper():
         min_periods = (
             rolling_obj.min_periods if rolling_obj.min_periods is not None else window
         )
-
-        if window > len(obj):
-            if isinstance(obj, pd.DataFrame):
-                return obj.astype(float) * np.nan
-            else:
-                return obj.astype(float) * np.nan
+        center = getattr(rolling_obj, "center", False)
+        axis = _rolling_axis(rolling_obj)
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
+
+        if window > _window_length(obj, axis):
+            return _all_nan_result(obj)
+
+        if center:
+            raise TypeError("centered rolling sem path is not optimized")
+
+        if axis == 1:
+            arr = _axis1_numeric_array(obj)
+            result_t = _rolling_sem_dispatch(arr.T, window, min_periods, ddof)
+            return _wrap_axis1_rolling_result(result_t, obj)
 
         numeric_cols, numeric_df = get_numeric_columns_fast(obj)
 

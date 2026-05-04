@@ -85,3 +85,15 @@ def test_axis1_pct_change_default_fill_is_columnwise():
     result = df.pct_change(axis=1)
 
     tm.assert_frame_equal(result, expected)
+
+
+def test_axis1_pct_change_fill_none_uses_numpy_vectorized_path():
+    df = _wide_frame()
+    df.iloc[::17, ::19] = np.nan
+
+    with unlockedpd._PatchRegistry.temporarily_unpatched():
+        expected = df.pct_change(axis=1, fill_method=None)
+    result = df.pct_change(axis=1, fill_method=None)
+
+    tm.assert_frame_equal(result, expected)
+    assert get_last_selected_path() == "numpy_vectorized"

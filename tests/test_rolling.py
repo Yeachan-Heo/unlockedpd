@@ -2,6 +2,7 @@
 
 import pandas as pd
 import numpy as np
+import pandas.testing as tm
 
 
 class TestRollingMean:
@@ -227,6 +228,64 @@ class TestRollingMinMax:
         result = df.rolling(5).max()
 
         pd.testing.assert_frame_equal(result, expected)
+
+
+class TestRollingAxis1:
+    """Tests for row-wise rolling windows."""
+
+    def test_axis1_rolling_common_ops_match_pandas(self):
+        """Axis=1 rolling uses row-wise windows, not column-wise axis=0 windows."""
+        import unlockedpd
+
+        rng = np.random.default_rng(20260504)
+        df = pd.DataFrame(rng.standard_normal((64, 96)))
+        df.iloc[::11, ::13] = np.nan
+
+        operations = [
+            ("mean", {}),
+            ("sum", {}),
+            ("min", {}),
+            ("max", {}),
+            ("std", {}),
+            ("var", {}),
+            ("count", {}),
+        ]
+
+        for method, kwargs in operations:
+            with unlockedpd._PatchRegistry.temporarily_unpatched():
+                expected = getattr(df.rolling(5, axis=1, min_periods=2), method)(
+                    **kwargs
+                )
+            result = getattr(df.rolling(5, axis=1, min_periods=2), method)(**kwargs)
+
+            tm.assert_frame_equal(result, expected, rtol=1e-10, atol=1e-10)
+
+    def test_large_axis1_rolling_uses_parallel_transposed_path(self):
+        """Large axis=1 rolling dispatches through the parallel kernel on df.T."""
+        import unlockedpd
+        from unlockedpd._resources import get_last_selected_path
+
+        rng = np.random.default_rng(20260505)
+        df = pd.DataFrame(rng.standard_normal((1024, 512)))
+
+        with unlockedpd._PatchRegistry.temporarily_unpatched():
+            expected = df.rolling(20, axis=1).mean()
+        result = df.rolling(20, axis=1).mean()
+
+        tm.assert_frame_equal(result, expected, rtol=1e-12, atol=1e-12)
+        assert get_last_selected_path() == "parallel_numba"
+
+    def test_axis1_rolling_window_larger_than_columns(self):
+        """Axis=1 all-NaN edge case uses column count, not row count."""
+        import unlockedpd
+
+        df = pd.DataFrame(np.arange(12.0).reshape(3, 4))
+
+        with unlockedpd._PatchRegistry.temporarily_unpatched():
+            expected = df.rolling(10, axis=1).sum()
+        result = df.rolling(10, axis=1).sum()
+
+        tm.assert_frame_equal(result, expected)
 
 
 class TestRollingSem:

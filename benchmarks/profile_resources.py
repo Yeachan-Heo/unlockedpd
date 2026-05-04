@@ -29,6 +29,7 @@ SCHEMA_VERSION = "resource-profile-v1"
 DEFAULT_CASES = (
     "import-only",
     "rolling-wide-10mb",
+    "rolling-axis1-wide-32mb",
     "rolling-medium-100mb",
     "expanding-wide-10mb",
     "aggregation-wide-10mb",
@@ -69,6 +70,48 @@ def _case_matrix() -> List[CaseSpec]:
             "rolling-wide-10mb", "rolling_sum", (1280, 1024), {"window": 20}, True
         ),
         CaseSpec(
+            "rolling-axis1-wide-32mb",
+            "rolling_mean",
+            (8192, 512),
+            {"window": 20, "axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "rolling-axis1-wide-32mb",
+            "rolling_sum",
+            (8192, 512),
+            {"window": 20, "axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "rolling-axis1-wide-32mb",
+            "rolling_std",
+            (8192, 512),
+            {"window": 20, "axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "rolling-axis1-wide-32mb",
+            "rolling_var",
+            (8192, 512),
+            {"window": 20, "axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "rolling-axis1-wide-32mb",
+            "rolling_min",
+            (8192, 512),
+            {"window": 20, "axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "rolling-axis1-wide-32mb",
+            "rolling_max",
+            (8192, 512),
+            {"window": 20, "axis": 1},
+            True,
+        ),
+        CaseSpec(
             "rolling-medium-100mb", "rolling_mean", (102400, 128), {"window": 20}, True
         ),
         CaseSpec(
@@ -98,6 +141,13 @@ def _case_matrix() -> List[CaseSpec]:
         CaseSpec(
             "aggregation-axis1-wide-32mb",
             "dataframe_std",
+            (8192, 512),
+            {"axis": 1},
+            True,
+        ),
+        CaseSpec(
+            "aggregation-axis1-wide-32mb",
+            "dataframe_var",
             (8192, 512),
             {"axis": 1},
             True,
@@ -367,11 +417,29 @@ def _run_operation(
         selected_path = "pandas"
 
     if operation == "rolling_mean":
-        result = df.rolling(params.get("window", 20)).mean()
+        result = df.rolling(
+            params.get("window", 20), axis=params.get("axis", 0)
+        ).mean()
     elif operation == "rolling_sum":
-        result = df.rolling(params.get("window", 20)).sum()
+        result = df.rolling(
+            params.get("window", 20), axis=params.get("axis", 0)
+        ).sum()
     elif operation == "rolling_std":
-        result = df.rolling(params.get("window", 20)).std()
+        result = df.rolling(
+            params.get("window", 20), axis=params.get("axis", 0)
+        ).std()
+    elif operation == "rolling_var":
+        result = df.rolling(
+            params.get("window", 20), axis=params.get("axis", 0)
+        ).var()
+    elif operation == "rolling_min":
+        result = df.rolling(
+            params.get("window", 20), axis=params.get("axis", 0)
+        ).min()
+    elif operation == "rolling_max":
+        result = df.rolling(
+            params.get("window", 20), axis=params.get("axis", 0)
+        ).max()
     elif operation == "rolling_corr":
         result = df.rolling(params.get("window", 20)).corr()
     elif operation == "rolling_cov":
@@ -384,6 +452,8 @@ def _run_operation(
         result = df.sum(axis=params.get("axis", 0))
     elif operation == "dataframe_std":
         result = df.std(axis=params.get("axis", 0))
+    elif operation == "dataframe_var":
+        result = df.var(axis=params.get("axis", 0))
     elif operation == "dataframe_min":
         result = df.min(axis=params.get("axis", 0))
     elif operation == "dataframe_max":

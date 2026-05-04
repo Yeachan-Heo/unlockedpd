@@ -15,6 +15,7 @@ from .._compat import (
     wrap_result_fast,
     ensure_float64,
 )
+from .._resources import record_dispatch_path
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it.
@@ -45,6 +46,40 @@ def _call_original_dataframe_method(df: pd.DataFrame, method_name: str, *args, *
         raise TypeError(f"Original pandas DataFrame.{method_name} is unavailable")
     return original(df, *args, **kwargs)
 
+
+def _pct_change_axis1_numpy(df: pd.DataFrame, periods: int) -> pd.DataFrame:
+    """Fast dense all-numeric pct_change(axis=1, fill_method=None)."""
+
+    arr = ensure_float64(df.values)
+    n_cols = arr.shape[1]
+    result = np.empty(arr.shape, dtype=np.float64)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if periods == 0:
+            np.divide(arr, arr, out=result)
+            result -= 1.0
+        elif periods > 0:
+            if periods >= n_cols:
+                result[:] = np.nan
+            else:
+                result[:, :periods] = np.nan
+                np.divide(arr[:, periods:], arr[:, :-periods], out=result[:, periods:])
+                result[:, periods:] -= 1.0
+        else:
+            abs_periods = -periods
+            if abs_periods >= n_cols:
+                result[:] = np.nan
+            else:
+                result[:, -abs_periods:] = np.nan
+                np.divide(
+                    arr[:, :-abs_periods],
+                    arr[:, abs_periods:],
+                    out=result[:, :-abs_periods],
+                )
+                result[:, :-abs_periods] -= 1.0
+
+    record_dispatch_path("numpy_vectorized")
+    return wrap_result_fast(result, df)
 
 
 # ============================================================================
@@ -445,6 +480,12 @@ def optimized_diff(df, periods=1, axis=0):
     """
     axis = _normalize_axis(axis)
     if axis == 1:
+        if isinstance(periods, int) and periods != 0:
+            shifted = _call_original_dataframe_method(
+                df, "shift", periods=periods, axis=axis
+            )
+            record_dispatch_path("pandas_primitives")
+            return df - shifted
         return _call_original_dataframe_method(
             df, "diff", periods=periods, axis=axis
         )
@@ -506,6 +547,8 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
     axis_arg = kwargs.pop("axis", 0)
     axis = _normalize_axis(axis_arg)
     if axis == 1:
+        if fill_method is None and is_all_numeric(df):
+            return _pct_change_axis1_numpy(df, periods)
         return _call_original_dataframe_method(
             df,
             "pct_change",
@@ -625,8 +668,11 @@ def apply_transform_patches():
         return original(self, *args, **kwargs)
 
     def _patched_diff(self, periods=1, axis=0):
-        if not config.enabled or _normalize_axis(axis) == 1:
+        if not config.enabled:
             return original_diff(self, periods=periods, axis=axis)
+        if _normalize_axis(axis) == 1 and isinstance(periods, int) and periods != 0:
+            record_dispatch_path("pandas_primitives")
+            return self - original_shift(self, periods=periods, axis=axis)
         try:
             return optimized_diff(self, periods=periods, axis=axis)
         except Exception as exc:
@@ -637,8 +683,7 @@ def apply_transform_patches():
     def _patched_pct_change(
         self, periods=1, fill_method='pad', limit=None, freq=None, **kwargs
     ):
-        axis = kwargs.get("axis", 0)
-        if not config.enabled or _normalize_axis(axis) == 1:
+        if not config.enabled:
             return original_pct_change(
                 self,
                 periods=periods,

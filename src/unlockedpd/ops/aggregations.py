@@ -674,7 +674,7 @@ def _var_dispatch(arr, skipna, axis, ddof):
     if axis == 1:
         if arr.size >= PARALLEL_THRESHOLD:
             record_dispatch_path("parallel_numba")
-            return _bounded_numba_axis1(_var_axis1_parallel, arr, skipna, ddof, cap=16)
+            return _bounded_numba_axis1(_var_axis1_parallel, arr, skipna, ddof, cap=4)
         arr = arr.T
     else:
         fast = _numpy_no_missing_reduction(arr, "var", 0, skipna, ddof)
@@ -792,7 +792,7 @@ def _std_dispatch(arr, skipna, axis, ddof):
     if axis == 1:
         if arr.size >= PARALLEL_THRESHOLD:
             record_dispatch_path("parallel_numba")
-            return _bounded_numba_axis1(_std_axis1_parallel, arr, skipna, ddof, cap=16)
+            return _bounded_numba_axis1(_std_axis1_parallel, arr, skipna, ddof, cap=4)
         arr = arr.T
     else:
         fast = _numpy_no_missing_reduction(arr, "std", 0, skipna, ddof)
