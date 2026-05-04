@@ -25,6 +25,8 @@ from .._resources import (
 # Thresholds for parallel execution dispatch
 PARALLEL_THRESHOLD = 500_000  # Use parallel prange above this
 THREADPOOL_THRESHOLD = 10_000_000  # Use ThreadPool+nogil above this
+DENSE_AXIS0_BLOCK_THRESHOLD = THREADPOOL_THRESHOLD
+DENSE_AXIS0_THREAD_CAP = 4
 
 
 def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
@@ -88,6 +90,96 @@ def _bounded_numba_axis1(kernel, arr, *args, cap=8):
     if target_threads != current_threads:
         set_num_threads(target_threads)
     return kernel(arr, *args)
+
+
+def _bounded_numba_axis0_dense(kernel, arr, *args, cap=DENSE_AXIS0_THREAD_CAP):
+    """Run dense axis=0 row-block kernels with bounded parallelism."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        min(configured, cap)
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="aggregation",
+            operation_cap=cap,
+            memory_bandwidth_cap=cap,
+            cap=cap,
+        )
+    )
+    current_threads = get_num_threads()
+    target_threads = max(1, min(int(target_threads), arr.shape[0]))
+
+    record_dispatch_path("parallel_numba")
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    return kernel(arr, target_threads, *args)
+
+
+@njit(parallel=True, cache=True)
+def _sum_axis0_dense_blocks(arr, blocks):
+    """Dense no-missing sum(axis=0) using contiguous row-block scans."""
+    n_rows, n_cols = arr.shape
+    partial = np.zeros((blocks, n_cols), dtype=np.float64)
+
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        for row in range(start, end):
+            for col in range(n_cols):
+                partial[block, col] += arr[row, col]
+
+    result = np.empty(n_cols, dtype=np.float64)
+    for col in prange(n_cols):
+        total = 0.0
+        for block in range(blocks):
+            total += partial[block, col]
+        result[col] = total
+
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _mean_axis0_dense_blocks(arr, blocks):
+    """Dense no-missing mean(axis=0) using contiguous row-block scans."""
+    n_rows, n_cols = arr.shape
+    partial = np.zeros((blocks, n_cols), dtype=np.float64)
+
+    for block in prange(blocks):
+        start = (n_rows * block) // blocks
+        end = (n_rows * (block + 1)) // blocks
+        for row in range(start, end):
+            for col in range(n_cols):
+                partial[block, col] += arr[row, col]
+
+    result = np.empty(n_cols, dtype=np.float64)
+    for col in prange(n_cols):
+        total = 0.0
+        for block in range(blocks):
+            total += partial[block, col]
+        result[col] = total / n_rows
+
+    return result
+
+
+def _dense_axis0_no_missing_reduction(arr, op, skipna):
+    """Use bounded row-block reducers for very large dense axis=0 sum/mean."""
+
+    if arr.size < DENSE_AXIS0_BLOCK_THRESHOLD or arr.shape[0] == 0:
+        return None
+
+    if op == "sum":
+        result = _bounded_numba_axis0_dense(_sum_axis0_dense_blocks, arr)
+    elif op == "mean":
+        result = _bounded_numba_axis0_dense(_mean_axis0_dense_blocks, arr)
+    else:
+        return None
+
+    if skipna and np.isnan(result).any() and np.isnan(arr).any():
+        return None
+    return result
 
 
 # ============================================================================
@@ -405,6 +497,9 @@ def _sum_dispatch(arr, skipna, axis):
             return _bounded_numba_axis1(_sum_axis1_parallel, arr, skipna)
         arr = arr.T
     else:
+        fast = _dense_axis0_no_missing_reduction(arr, "sum", skipna)
+        if fast is not None:
+            return fast
         fast = _numpy_no_missing_reduction(arr, "sum", 0, skipna)
         if fast is not None:
             return fast
@@ -526,6 +621,9 @@ def _mean_dispatch(arr, skipna, axis):
             return _bounded_numba_axis1(_mean_axis1_parallel, arr, skipna)
         arr = arr.T
     else:
+        fast = _dense_axis0_no_missing_reduction(arr, "mean", skipna)
+        if fast is not None:
+            return fast
         fast = _numpy_no_missing_reduction(arr, "mean", 0, skipna)
         if fast is not None:
             return fast

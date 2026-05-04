@@ -33,6 +33,7 @@ DEFAULT_CASES = (
     "rolling-medium-100mb",
     "expanding-wide-10mb",
     "aggregation-wide-10mb",
+    "aggregation-medium-100mb",
     "aggregation-axis1-wide-32mb",
     "cumulative-axis1-wide-32mb",
     "transform-axis1-wide-32mb",
@@ -123,6 +124,20 @@ def _case_matrix() -> List[CaseSpec]:
         ),
         CaseSpec(
             "aggregation-wide-10mb", "dataframe_sum", (1280, 1024), {"axis": 0}, True
+        ),
+        CaseSpec(
+            "aggregation-medium-100mb",
+            "dataframe_mean",
+            (102400, 128),
+            {"axis": 0},
+            True,
+        ),
+        CaseSpec(
+            "aggregation-medium-100mb",
+            "dataframe_sum",
+            (102400, 128),
+            {"axis": 0},
+            True,
         ),
         CaseSpec(
             "aggregation-axis1-wide-32mb",

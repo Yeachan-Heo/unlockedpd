@@ -36,6 +36,7 @@ NAMED_PARALLELISM_CASES = {
     "rolling-medium-100mb",
     "expanding-wide-10mb",
     "aggregation-wide-10mb",
+    "aggregation-medium-100mb",
     "aggregation-axis1-wide-32mb",
     "rank-wide-1mb-control",
     "rank-axis1-wide-32mb",
