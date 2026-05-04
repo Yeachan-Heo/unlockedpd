@@ -1,7 +1,8 @@
-"""Warmup module for pre-compiling Numba functions.
+"""Warmup module for manually pre-compiling Numba functions.
 
-This module triggers JIT compilation at import time so that
-the first actual call doesn't incur compilation overhead.
+The default package import is lazy and does not run this module. Opt in with
+``UNLOCKEDPD_WARMUP=eager`` or call ``unlockedpd.warmup_all()`` explicitly for
+benchmark/server startup paths that should pay JIT cost before first work.
 """
 
 import numpy as np
@@ -371,8 +372,8 @@ def warmup_transform():
 def warmup_all():
     """Pre-compile all Numba functions.
 
-    This should be called at module import time to avoid
-    JIT compilation overhead on first use.
+    Call this manually for benchmark/server processes that prefer paying JIT
+    compilation cost before serving first real work.
     """
     warmup_rolling()
     warmup_rank()

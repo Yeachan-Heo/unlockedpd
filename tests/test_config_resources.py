@@ -56,6 +56,31 @@ def test_resource_budget_config_from_env(monkeypatch):
     assert cfg.as_dict()["max_memory_overhead"] == 4.5
 
 
+def test_warmup_config_env_and_runtime_policy(monkeypatch):
+    monkeypatch.setenv("UNLOCKEDPD_WARMUP", "eager")
+
+    import unlockedpd._config as config_module
+
+    cfg = config_module.UnlockedConfig()
+    assert cfg.warmup == "eager"
+
+    cfg.warmup = "off"
+    assert cfg.warmup == "none"
+
+    cfg.warmup = "manual"
+    assert cfg.warmup == "lazy"
+    assert cfg.as_dict()["warmup"] == "lazy"
+
+
+def test_invalid_runtime_warmup_value_raises():
+    import pytest
+    import unlockedpd._config as config_module
+
+    cfg = config_module.UnlockedConfig()
+    with pytest.raises(ValueError, match="warmup"):
+        cfg.warmup = "sometimes"
+
+
 def test_resolve_threadpool_workers_clamps_all_caps(monkeypatch):
     import unlockedpd._resources as resources
 
