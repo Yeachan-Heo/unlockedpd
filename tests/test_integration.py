@@ -1,5 +1,4 @@
 """Integration tests for unlockedpd."""
-import pytest
 import subprocess
 import sys
 
@@ -20,6 +19,52 @@ assert original_mean is not patched_mean, "Method should be patched after import
 
 from unlockedpd._patch import is_patched
 assert is_patched(pd.core.window.rolling.Rolling, 'mean')
+print("PASS")
+'''
+        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+        assert result.returncode == 0, f"Test failed: {result.stderr}"
+        assert "PASS" in result.stdout
+
+    def test_import_warmup_is_lazy_by_default(self):
+        """Verify default import patches pandas without loading warmup module."""
+        code = '''
+import sys
+import pandas as pd
+original_mean = pd.core.window.rolling.Rolling.mean
+
+import unlockedpd
+
+patched_mean = pd.core.window.rolling.Rolling.mean
+assert original_mean is not patched_mean, "Method should be patched after import"
+assert unlockedpd.config.warmup == "lazy"
+assert "unlockedpd._warmup" not in sys.modules
+print("PASS")
+'''
+        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+        assert result.returncode == 0, f"Test failed: {result.stderr}"
+        assert "PASS" in result.stdout
+
+    def test_eager_import_policy_invokes_warmup(self):
+        """Verify eager import policy invokes the warmup entrypoint."""
+        code = '''
+import os
+import sys
+import types
+
+os.environ["UNLOCKEDPD_WARMUP"] = "eager"
+module = types.ModuleType("unlockedpd._warmup")
+module.called = False
+
+def warmup_all():
+    module.called = True
+
+module.warmup_all = warmup_all
+sys.modules["unlockedpd._warmup"] = module
+
+import unlockedpd
+
+assert unlockedpd.config.warmup == "eager"
+assert module.called is True
 print("PASS")
 '''
         result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
