@@ -5,6 +5,7 @@ This module provides optimized rolling correlation and covariance using:
 2. Online covariance algorithm for numerical stability
 3. Memory guards for the output-bound O(rows * cols^2) pairwise shape
 """
+
 import numpy as np
 from numba import njit
 import pandas as pd
@@ -12,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 
 from .._compat import get_numeric_columns_fast, ensure_float64
+from .._resources import set_last_selected_path
 from ._threadpool import make_threadpool_chunks
 
 PAIRWISE_THREADPOOL_CAP = 32
@@ -89,8 +91,12 @@ def _check_pairwise_memory_budget(n_rows, n_cols, input_nbytes, input_copy_bytes
 
     max_memory_overhead = _get_max_memory_overhead()
     if estimate["overhead_ratio"] > max_memory_overhead:
+        set_last_selected_path("fallback")
         raise TypeError(
-            "pairwise rolling memory guard: estimated optimized peak "
+            "pairwise rolling memory guard: estimated RSS overhead "
+            f"{estimate['overhead_ratio']:.2f}x exceeds "
+            f"configured max_memory_overhead={max_memory_overhead:.2f}x; "
+            "estimated optimized peak "
             f"{estimate['optimized_peak_bytes']} bytes is "
             f"{estimate['overhead_ratio']:.2f}x the output-bound footprint "
             f"(limit {max_memory_overhead:.2f}x)"
@@ -100,6 +106,7 @@ def _check_pairwise_memory_budget(n_rows, n_cols, input_nbytes, input_copy_bytes
     if available is not None:
         max_allocation = int(available * PAIRWISE_MEMORY_AVAILABLE_FRACTION)
         if estimate["optimized_peak_bytes"] > max_allocation:
+            set_last_selected_path("fallback")
             raise TypeError(
                 "pairwise rolling memory guard: estimated optimized peak "
                 f"{estimate['optimized_peak_bytes']} bytes exceeds "
@@ -144,6 +151,7 @@ def _pairwise_result_frame(result_2d, obj, numeric_columns):
 # Nogil kernels for rolling covariance/correlation
 # ============================================================================
 
+
 @njit(nogil=True, cache=True)
 def _rolling_cov_single_col_nogil(arr_x, arr_y, result, window, min_periods, ddof):
     """Rolling covariance between two columns - GIL released.
@@ -183,7 +191,9 @@ def _rolling_cov_single_col_nogil(arr_x, arr_y, result, window, min_periods, ddo
 
 
 @njit(nogil=True, cache=True)
-def _rolling_corr_single_col_nogil(arr_x, arr_y, result, window, min_periods, is_diagonal):
+def _rolling_corr_single_col_nogil(
+    arr_x, arr_y, result, window, min_periods, is_diagonal
+):
     """Rolling correlation between two columns - GIL released.
 
     Pearson correlation = Cov(X,Y) / (Std(X) * Std(Y))
@@ -239,7 +249,18 @@ def _rolling_corr_single_col_nogil(arr_x, arr_y, result, window, min_periods, is
 
 
 @njit(nogil=True, cache=True)
-def _rolling_cov_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair, pairs_i, pairs_j, window, min_periods, ddof, n_rows):
+def _rolling_cov_matrix_nogil_chunk(
+    arr,
+    result_flat,
+    start_pair,
+    end_pair,
+    pairs_i,
+    pairs_j,
+    window,
+    min_periods,
+    ddof,
+    n_rows,
+):
     """Rolling covariance for multiple column pairs - GIL released."""
     for p in range(start_pair, end_pair):
         i = pairs_i[p]
@@ -247,11 +268,23 @@ def _rolling_cov_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair, pair
         col_x = arr[:, i]
         col_y = arr[:, j]
         result_col = result_flat[:, p]
-        _rolling_cov_single_col_nogil(col_x, col_y, result_col, window, min_periods, ddof)
+        _rolling_cov_single_col_nogil(
+            col_x, col_y, result_col, window, min_periods, ddof
+        )
 
 
 @njit(nogil=True, cache=True)
-def _rolling_corr_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair, pairs_i, pairs_j, window, min_periods, n_rows):
+def _rolling_corr_matrix_nogil_chunk(
+    arr,
+    result_flat,
+    start_pair,
+    end_pair,
+    pairs_i,
+    pairs_j,
+    window,
+    min_periods,
+    n_rows,
+):
     """Rolling correlation for multiple column pairs - GIL released."""
     for p in range(start_pair, end_pair):
         i = pairs_i[p]
@@ -259,12 +292,26 @@ def _rolling_corr_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair, pai
         col_x = arr[:, i]
         col_y = arr[:, j]
         result_col = result_flat[:, p]
-        is_diagonal = (i == j)
-        _rolling_corr_single_col_nogil(col_x, col_y, result_col, window, min_periods, is_diagonal)
+        is_diagonal = i == j
+        _rolling_corr_single_col_nogil(
+            col_x, col_y, result_col, window, min_periods, is_diagonal
+        )
 
 
 @njit(nogil=True, cache=True)
-def _rolling_cov_matrix_direct_nogil_chunk(arr, result_2d, start_pair, end_pair, pairs_i, pairs_j, window, min_periods, ddof, n_rows, n_cols):
+def _rolling_cov_matrix_direct_nogil_chunk(
+    arr,
+    result_2d,
+    start_pair,
+    end_pair,
+    pairs_i,
+    pairs_j,
+    window,
+    min_periods,
+    ddof,
+    n_rows,
+    n_cols,
+):
     """Rolling covariance for multiple column pairs into final pandas shape."""
     for p in range(start_pair, end_pair):
         i = pairs_i[p]
@@ -306,7 +353,18 @@ def _rolling_cov_matrix_direct_nogil_chunk(arr, result_2d, start_pair, end_pair,
 
 
 @njit(nogil=True, cache=True)
-def _rolling_corr_matrix_direct_nogil_chunk(arr, result_2d, start_pair, end_pair, pairs_i, pairs_j, window, min_periods, n_rows, n_cols):
+def _rolling_corr_matrix_direct_nogil_chunk(
+    arr,
+    result_2d,
+    start_pair,
+    end_pair,
+    pairs_i,
+    pairs_j,
+    window,
+    min_periods,
+    n_rows,
+    n_cols,
+):
     """Rolling correlation for multiple column pairs into final pandas shape."""
     for p in range(start_pair, end_pair):
         i = pairs_i[p]
@@ -368,6 +426,7 @@ def _rolling_corr_matrix_direct_nogil_chunk(arr, result_2d, start_pair, end_pair
 # ThreadPool functions
 # ============================================================================
 
+
 def _rolling_cov_pairwise_threadpool(arr, window, min_periods, ddof=1):
     """Rolling covariance matrix using ThreadPool + nogil kernels.
 
@@ -387,8 +446,18 @@ def _rolling_cov_pairwise_threadpool(arr, window, min_periods, ddof=1):
 
     def process_chunk(args):
         start_pair, end_pair = args
-        _rolling_cov_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair,
-                                        pairs_i, pairs_j, window, min_periods, ddof, n_rows)
+        _rolling_cov_matrix_nogil_chunk(
+            arr,
+            result_flat,
+            start_pair,
+            end_pair,
+            pairs_i,
+            pairs_j,
+            window,
+            min_periods,
+            ddof,
+            n_rows,
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -421,8 +490,17 @@ def _rolling_corr_pairwise_threadpool(arr, window, min_periods):
 
     def process_chunk(args):
         start_pair, end_pair = args
-        _rolling_corr_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair,
-                                         pairs_i, pairs_j, window, min_periods, n_rows)
+        _rolling_corr_matrix_nogil_chunk(
+            arr,
+            result_flat,
+            start_pair,
+            end_pair,
+            pairs_i,
+            pairs_j,
+            window,
+            min_periods,
+            n_rows,
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -509,11 +587,16 @@ def _rolling_corr_pairwise_threadpool_frame(arr, window, min_periods):
 # Wrapper functions for pandas Rolling objects
 # ============================================================================
 
-def optimized_rolling_cov(rolling_obj, other=None, pairwise=None, ddof=1, *args, **kwargs):
+
+def optimized_rolling_cov(
+    rolling_obj, other=None, pairwise=None, ddof=1, *args, **kwargs
+):
     """Optimized rolling covariance."""
     obj = rolling_obj.obj
     window = rolling_obj.window
-    min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+    min_periods = (
+        rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+    )
 
     # Only optimize DataFrame pairwise case
     if not isinstance(obj, pd.DataFrame):
@@ -530,7 +613,9 @@ def optimized_rolling_cov(rolling_obj, other=None, pairwise=None, ddof=1, *args,
         raise TypeError("No numeric columns to process")
 
     raw_arr = numeric_df.values
-    input_copy_bytes = raw_arr.size * _FLOAT64_SIZE if raw_arr.dtype != np.float64 else 0
+    input_copy_bytes = (
+        raw_arr.size * _FLOAT64_SIZE if raw_arr.dtype != np.float64 else 0
+    )
     arr = ensure_float64(raw_arr)
     n_rows, n_cols = arr.shape
     _check_pairwise_memory_budget(n_rows, n_cols, raw_arr.nbytes, input_copy_bytes)
@@ -543,7 +628,9 @@ def optimized_rolling_corr(rolling_obj, other=None, pairwise=None, *args, **kwar
     """Optimized rolling correlation."""
     obj = rolling_obj.obj
     window = rolling_obj.window
-    min_periods = rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+    min_periods = (
+        rolling_obj.min_periods if rolling_obj.min_periods is not None else window
+    )
 
     if not isinstance(obj, pd.DataFrame):
         raise TypeError("Optimization only for DataFrame")
@@ -559,7 +646,9 @@ def optimized_rolling_corr(rolling_obj, other=None, pairwise=None, *args, **kwar
         raise TypeError("No numeric columns to process")
 
     raw_arr = numeric_df.values
-    input_copy_bytes = raw_arr.size * _FLOAT64_SIZE if raw_arr.dtype != np.float64 else 0
+    input_copy_bytes = (
+        raw_arr.size * _FLOAT64_SIZE if raw_arr.dtype != np.float64 else 0
+    )
     arr = ensure_float64(raw_arr)
     n_rows, n_cols = arr.shape
     _check_pairwise_memory_budget(n_rows, n_cols, raw_arr.nbytes, input_copy_bytes)
@@ -574,5 +663,5 @@ def apply_pairwise_patches():
 
     Rolling = pd.core.window.rolling.Rolling
 
-    patch(Rolling, 'cov', optimized_rolling_cov)
-    patch(Rolling, 'corr', optimized_rolling_corr)
+    patch(Rolling, "cov", optimized_rolling_cov)
+    patch(Rolling, "corr", optimized_rolling_corr)

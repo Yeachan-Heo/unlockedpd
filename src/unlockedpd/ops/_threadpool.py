@@ -1,4 +1,5 @@
 """Thin chunk helpers for bounded ThreadPool fan-out in operation modules."""
+
 from __future__ import annotations
 
 import math
@@ -38,7 +39,6 @@ def make_threadpool_chunks(
 
     chunk_size = max(1, math.ceil(units / workers))
     chunks = [
-        (start, min(start + chunk_size, units))
-        for start in range(0, units, chunk_size)
+        (start, min(start + chunk_size, units)) for start in range(0, units, chunk_size)
     ]
     return max(1, min(workers, len(chunks))), chunks
