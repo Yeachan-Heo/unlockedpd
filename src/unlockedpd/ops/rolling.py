@@ -55,17 +55,12 @@ def _bounded_numba_rolling(kernel, arr, *args, cap=8):
         )
     )
     current_threads = get_num_threads()
-    target_threads = max(1, min(int(target_threads), int(current_threads)))
+    target_threads = max(1, int(target_threads))
 
     record_dispatch_path("parallel_numba")
-    if target_threads == current_threads:
-        return kernel(arr, *args)
-
-    set_num_threads(target_threads)
-    try:
-        return kernel(arr, *args)
-    finally:
-        set_num_threads(current_threads)
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    return kernel(arr, *args)
 
 
 # ============================================================================

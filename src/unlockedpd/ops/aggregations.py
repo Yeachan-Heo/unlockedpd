@@ -76,18 +76,15 @@ def _bounded_numba_axis1(kernel, arr, *args, cap=8):
         )
     )
     current_threads = get_num_threads()
-    # Never raise the active Numba thread count implicitly; only cap it to avoid
-    # CPU oversubscription on memory-bound row reductions.
-    target_threads = max(1, min(int(target_threads), int(current_threads)))
+    target_threads = max(1, int(target_threads))
 
-    if target_threads == current_threads:
-        return kernel(arr, *args)
-
-    set_num_threads(target_threads)
-    try:
-        return kernel(arr, *args)
-    finally:
-        set_num_threads(current_threads)
+    # In auto mode, keep the bounded Numba thread count sticky.  Restoring the
+    # machine-wide default (384 threads on large CI hosts) makes every warm
+    # operation pay set_num_threads overhead again and reintroduces
+    # oversubscription between optimized calls.
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    return kernel(arr, *args)
 
 
 # ============================================================================

@@ -37,14 +37,10 @@ def _bounded_numba_rank(kernel, arr, *args):
         else resolve_threadpool_workers(arr.shape[0], operation="rank")
     )
     current_threads = get_num_threads()
-    target_threads = max(1, min(int(target_threads), int(current_threads)))
-    if target_threads == current_threads:
-        return kernel(arr, *args)
-    set_num_threads(target_threads)
-    try:
-        return kernel(arr, *args)
-    finally:
-        set_num_threads(current_threads)
+    target_threads = max(1, int(target_threads))
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    return kernel(arr, *args)
 
 
 @njit(cache=True)
