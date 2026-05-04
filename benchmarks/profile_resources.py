@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = "resource-profile-v1"
+RSS_NOISE_FLOOR_BYTES = 1 << 20
 DEFAULT_CASES = (
     "import-only",
     "rolling-wide-10mb",
@@ -301,26 +302,30 @@ def _thread_count() -> int:
 
 
 class _ThreadSampler:
-    def __init__(self, interval: float = 0.002) -> None:
+    def __init__(self, interval: float = 0.0) -> None:
         self.interval = interval
         self.peak_threads = _thread_count()
         self._stop = threading.Event()
+        self._started = False
         self._thread = threading.Thread(
             target=self._run, name="resource-profiler-sampler", daemon=True
         )
 
     def __enter__(self) -> "_ThreadSampler":
-        self._thread.start()
+        if self.interval > 0:
+            self._thread.start()
+            self._started = True
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1.0)
+        if self._started:
+            self._stop.set()
+            self._thread.join(timeout=1.0)
+        self.peak_threads = max(self.peak_threads, _thread_count())
 
     def _run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop.wait(self.interval):
             self.peak_threads = max(self.peak_threads, _thread_count())
-            time.sleep(self.interval)
 
 
 def _resource_config_snapshot() -> Dict[str, Any]:
@@ -601,6 +606,7 @@ def _worker_main(args: argparse.Namespace) -> int:
         # one unmeasured operation first in the same isolated worker process.
         _run_operation(spec, args.worker_seed, implementation, prepared_df)
 
+    sampler = _ThreadSampler(interval=args.thread_sample_interval)
     before_rss = _rss_bytes()
     before_ru = resource.getrusage(resource.RUSAGE_SELF)
     before_wall = time.perf_counter()
@@ -610,7 +616,7 @@ def _worker_main(args: argparse.Namespace) -> int:
     checksum_wall = 0.0
     checksum_cpu = 0.0
     try:
-        with _ThreadSampler() as sampler:
+        with sampler:
             result, selected_path = _run_operation(
                 spec, args.worker_seed, implementation, prepared_df
             )
@@ -658,7 +664,12 @@ def _worker_main(args: argparse.Namespace) -> int:
 
 
 def _run_worker(
-    spec: CaseSpec, seed: int, repeat: int, mode: str, implementation: str
+    spec: CaseSpec,
+    seed: int,
+    repeat: int,
+    mode: str,
+    implementation: str,
+    thread_sample_interval: float,
 ) -> Dict[str, Any]:
     env = _module_path_env()
     cmd = [
@@ -672,6 +683,8 @@ def _run_worker(
         mode,
         "--_worker-implementation",
         implementation,
+        "--thread-sample-interval",
+        str(thread_sample_interval),
     ]
     start = time.perf_counter()
     proc = subprocess.run(
@@ -745,21 +758,13 @@ def _summarize(
     )
     pandas_rss = mean(
         [
-            max(
-                1.0,
-                abs(float(r.get("rss_delta_bytes", 0)))
-                or float(r.get("peak_rss_bytes", 0)),
-            )
+            max(float(RSS_NOISE_FLOOR_BYTES), abs(float(r.get("rss_delta_bytes", 0))))
             for r in pandas
         ]
     )
     opt_rss = mean(
         [
-            max(
-                1.0,
-                abs(float(r.get("rss_delta_bytes", 0)))
-                or float(r.get("peak_rss_bytes", 0)),
-            )
+            max(float(RSS_NOISE_FLOOR_BYTES), abs(float(r.get("rss_delta_bytes", 0))))
             for r in opt
         ]
     )
@@ -858,7 +863,14 @@ def _driver_main(args: argparse.Namespace) -> int:
             repeats: list[Dict[str, Any]] = []
             for repeat in range(args.repeats):
                 for implementation in ("pandas", "optimized"):
-                    record = _run_worker(spec, args.seed, repeat, mode, implementation)
+                    record = _run_worker(
+                        spec,
+                        args.seed,
+                        repeat,
+                        mode,
+                        implementation,
+                        args.thread_sample_interval,
+                    )
                     record["repeat_index"] = repeat
                     repeats.append(record)
             case = spec.worker_payload()
@@ -915,6 +927,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=int,
         default=0,
         help="optional local-smoke size guard",
+    )
+    parser.add_argument(
+        "--thread-sample-interval",
+        type=float,
+        default=0.0,
+        help=(
+            "optional active thread-sampling interval in seconds; default 0 "
+            "uses non-intrusive before/after thread counts"
+        ),
     )
     parser.add_argument("--_worker-case", dest="worker_case")
     parser.add_argument("--_worker-seed", dest="worker_seed", type=int, default=0)

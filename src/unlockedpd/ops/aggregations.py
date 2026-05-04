@@ -26,8 +26,10 @@ from .._resources import (
 PARALLEL_THRESHOLD = 500_000  # Use parallel prange above this
 THREADPOOL_THRESHOLD = 10_000_000  # Use ThreadPool+nogil above this
 DENSE_AXIS0_BLOCK_THRESHOLD = THREADPOOL_THRESHOLD
-DENSE_AXIS0_THREAD_CAP = 16
+DENSE_AXIS0_THREAD_CAP = 32
 AXIS1_AGG_THREAD_CAP = 32
+AXIS1_DENSE_THREAD_CAP = 16
+AXIS1_DENSE_MINMAX_THREAD_CAP = 32
 
 
 def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
@@ -88,6 +90,32 @@ def _bounded_numba_axis1(kernel, arr, *args, cap=8):
     # machine-wide default (384 threads on large CI hosts) makes every warm
     # operation pay set_num_threads overhead again and reintroduces
     # oversubscription between optimized calls.
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    return kernel(arr, *args)
+
+
+def _bounded_numba_axis1_dense(kernel, arr, *args, cap=AXIS1_DENSE_THREAD_CAP):
+    """Run dense no-missing row reducers with bandwidth-aware parallelism."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        min(configured, cap)
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="aggregation",
+            operation_cap=cap,
+            memory_bandwidth_cap=cap,
+            cap=cap,
+        )
+    )
+    current_threads = get_num_threads()
+    target_threads = max(1, min(int(target_threads), arr.shape[0]))
+
+    record_dispatch_path("parallel_numba")
     if target_threads != current_threads:
         set_num_threads(target_threads)
     return kernel(arr, *args)
@@ -179,6 +207,221 @@ def _dense_axis0_no_missing_reduction(arr, op, skipna):
         return None
 
     if skipna and np.isnan(result).any() and np.isnan(arr).any():
+        return None
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _sum_axis1_dense_no_missing(arr):
+    """Dense row sum without per-element NaN branches."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        total = 0.0
+        for col in range(n_cols):
+            total += arr[row, col]
+        result[row] = total
+
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _mean_axis1_dense_no_missing(arr):
+    """Dense row mean without per-element NaN branches."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+    scale = 1.0 / n_cols
+
+    for row in prange(n_rows):
+        total = 0.0
+        for col in range(n_cols):
+            total += arr[row, col]
+        result[row] = total * scale
+
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _var_axis1_dense_no_missing(arr, ddof):
+    """Dense row variance using two contiguous passes."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        total = 0.0
+        for col in range(n_cols):
+            total += arr[row, col]
+        mean = total / n_cols
+
+        m2 = 0.0
+        for col in range(n_cols):
+            diff = arr[row, col] - mean
+            m2 += diff * diff
+
+        if n_cols > ddof:
+            result[row] = m2 / (n_cols - ddof)
+        else:
+            result[row] = np.nan
+
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _std_axis1_dense_no_missing(arr, ddof):
+    """Dense row std using two contiguous passes."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        total = 0.0
+        for col in range(n_cols):
+            total += arr[row, col]
+        mean = total / n_cols
+
+        m2 = 0.0
+        for col in range(n_cols):
+            diff = arr[row, col] - mean
+            m2 += diff * diff
+
+        if n_cols > ddof:
+            result[row] = np.sqrt(m2 / (n_cols - ddof))
+        else:
+            result[row] = np.nan
+
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _min_axis1_dense_skipna(arr):
+    """Dense row minimum optimized for the common no-missing skipna=True case."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        m0 = arr[row, 0]
+        m1 = m0
+        m2 = m0
+        m3 = m0
+
+        col = 1
+        while col + 3 < n_cols:
+            v0 = arr[row, col]
+            v1 = arr[row, col + 1]
+            v2 = arr[row, col + 2]
+            v3 = arr[row, col + 3]
+            if v0 < m0:
+                m0 = v0
+            if v1 < m1:
+                m1 = v1
+            if v2 < m2:
+                m2 = v2
+            if v3 < m3:
+                m3 = v3
+            col += 4
+
+        current = m0
+        if m1 < current:
+            current = m1
+        if m2 < current:
+            current = m2
+        if m3 < current:
+            current = m3
+
+        while col < n_cols:
+            value = arr[row, col]
+            if value < current:
+                current = value
+            col += 1
+        result[row] = current
+
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _max_axis1_dense_skipna(arr):
+    """Dense row maximum optimized for the common no-missing skipna=True case."""
+    n_rows, n_cols = arr.shape
+    result = np.empty(n_rows, dtype=np.float64)
+
+    for row in prange(n_rows):
+        m0 = arr[row, 0]
+        m1 = m0
+        m2 = m0
+        m3 = m0
+
+        col = 1
+        while col + 3 < n_cols:
+            v0 = arr[row, col]
+            v1 = arr[row, col + 1]
+            v2 = arr[row, col + 2]
+            v3 = arr[row, col + 3]
+            if v0 > m0:
+                m0 = v0
+            if v1 > m1:
+                m1 = v1
+            if v2 > m2:
+                m2 = v2
+            if v3 > m3:
+                m3 = v3
+            col += 4
+
+        current = m0
+        if m1 > current:
+            current = m1
+        if m2 > current:
+            current = m2
+        if m3 > current:
+            current = m3
+
+        while col < n_cols:
+            value = arr[row, col]
+            if value > current:
+                current = value
+            col += 1
+        result[row] = current
+
+    return result
+
+
+def _dense_axis1_no_missing_reduction(arr, op, skipna, ddof=1):
+    """Use branch-free row reducers and fall back when missing data is observed.
+
+    The broad large-frame cases are dense float64 arrays.  The generic axis=1
+    kernels preserve pandas skipna semantics by checking every element for NaN,
+    but those branches prevent vectorization and leave simple reducers below the
+    10x target.  These kernels speculatively run the no-missing path, validate
+    the tiny row result for NaN sentinels, and only rescan/fallback when a frame
+    actually contains missing data.
+    """
+
+    if arr.size < PARALLEL_THRESHOLD or arr.shape[1] == 0:
+        return None
+
+    if op == "sum":
+        result = _bounded_numba_axis1_dense(_sum_axis1_dense_no_missing, arr)
+    elif op == "mean":
+        result = _bounded_numba_axis1_dense(_mean_axis1_dense_no_missing, arr)
+    elif op == "var":
+        result = _bounded_numba_axis1_dense(
+            _var_axis1_dense_no_missing, arr, ddof
+        )
+    elif op == "std":
+        result = _bounded_numba_axis1_dense(
+            _std_axis1_dense_no_missing, arr, ddof
+        )
+    elif op == "min" and skipna:
+        result = _bounded_numba_axis1_dense(
+            _min_axis1_dense_skipna, arr, cap=AXIS1_DENSE_MINMAX_THREAD_CAP
+        )
+    elif op == "max" and skipna:
+        result = _bounded_numba_axis1_dense(
+            _max_axis1_dense_skipna, arr, cap=AXIS1_DENSE_MINMAX_THREAD_CAP
+        )
+    else:
+        return None
+
+    if np.isnan(result).any() and np.isnan(arr).any():
         return None
     return result
 
@@ -490,6 +733,9 @@ def _sum_threadpool(arr, skipna):
 def _sum_dispatch(arr, skipna, axis):
     """Dispatch sum to appropriate implementation based on size."""
     if axis == 1:
+        fast = _dense_axis1_no_missing_reduction(arr, "sum", skipna)
+        if fast is not None:
+            return fast
         fast = _numpy_no_missing_reduction(arr, "sum", 1, skipna)
         if fast is not None:
             return fast
@@ -616,6 +862,9 @@ def _mean_threadpool(arr, skipna):
 def _mean_dispatch(arr, skipna, axis):
     """Dispatch mean to appropriate implementation based on size."""
     if axis == 1:
+        fast = _dense_axis1_no_missing_reduction(arr, "mean", skipna)
+        if fast is not None:
+            return fast
         fast = _numpy_no_missing_reduction(arr, "mean", 1, skipna)
         if fast is not None:
             return fast
@@ -775,6 +1024,9 @@ def _var_threadpool(arr, skipna, ddof):
 def _var_dispatch(arr, skipna, axis, ddof):
     """Dispatch variance to appropriate implementation based on size."""
     if axis == 1:
+        fast = _dense_axis1_no_missing_reduction(arr, "var", skipna, ddof)
+        if fast is not None:
+            return fast
         if arr.size >= PARALLEL_THRESHOLD:
             record_dispatch_path("parallel_numba")
             return _bounded_numba_axis1(
@@ -899,6 +1151,9 @@ def _std_threadpool(arr, skipna, ddof):
 def _std_dispatch(arr, skipna, axis, ddof):
     """Dispatch std to appropriate implementation based on size."""
     if axis == 1:
+        fast = _dense_axis1_no_missing_reduction(arr, "std", skipna, ddof)
+        if fast is not None:
+            return fast
         if arr.size >= PARALLEL_THRESHOLD:
             record_dispatch_path("parallel_numba")
             return _bounded_numba_axis1(
@@ -1047,6 +1302,9 @@ def _min_threadpool(arr, skipna):
 def _min_dispatch(arr, skipna, axis):
     """Dispatch min to appropriate implementation based on size."""
     if axis == 1:
+        fast = _dense_axis1_no_missing_reduction(arr, "min", skipna)
+        if fast is not None:
+            return fast
         fast = _numpy_no_missing_reduction(arr, "min", 1, skipna)
         if fast is not None:
             return fast
@@ -1194,6 +1452,9 @@ def _max_threadpool(arr, skipna):
 def _max_dispatch(arr, skipna, axis):
     """Dispatch max to appropriate implementation based on size."""
     if axis == 1:
+        fast = _dense_axis1_no_missing_reduction(arr, "max", skipna)
+        if fast is not None:
+            return fast
         fast = _numpy_no_missing_reduction(arr, "max", 1, skipna)
         if fast is not None:
             return fast

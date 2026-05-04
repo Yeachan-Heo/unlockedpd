@@ -13,7 +13,7 @@ def _frame(rows=1024, cols=512):
     return pd.DataFrame(rng.normal(size=(rows, cols)))
 
 
-def test_axis1_sum_uses_numpy_vectorized_dense_fast_path():
+def test_axis1_sum_uses_dense_parallel_numba_fast_path():
     df = _frame()
 
     with unlockedpd._PatchRegistry.temporarily_unpatched():
@@ -21,7 +21,7 @@ def test_axis1_sum_uses_numpy_vectorized_dense_fast_path():
     result = df.sum(axis=1)
 
     tm.assert_series_equal(result, expected)
-    assert get_last_selected_path() == "numpy_vectorized"
+    assert get_last_selected_path() == "parallel_numba"
 
 
 def test_axis1_mean_nan_path_matches_pandas():
@@ -45,3 +45,15 @@ def test_axis1_std_uses_bounded_parallel_numba_path():
 
     tm.assert_series_equal(result, expected)
     assert get_last_selected_path() == "parallel_numba"
+
+
+def test_axis1_min_max_use_dense_parallel_numba_fast_path():
+    df = _frame()
+
+    for method in ("min", "max"):
+        with unlockedpd._PatchRegistry.temporarily_unpatched():
+            expected = getattr(df, method)(axis=1)
+        result = getattr(df, method)(axis=1)
+
+        tm.assert_series_equal(result, expected)
+        assert get_last_selected_path() == "parallel_numba"
