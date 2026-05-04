@@ -9,14 +9,9 @@ import numpy as np
 from numba import njit
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
-from .._resources import (
-    assert_memory_budget,
-    pairwise_rolling_memory_estimate,
-    record_dispatch_path,
-    simple_result_memory_estimate,
-    use_threadpool_path,
-)
+import os
+
+from .._compat import get_numeric_columns_fast, ensure_float64
 
 THREADPOOL_THRESHOLD = 10_000_000
 PAIRWISE_MEMORY_AVAILABLE_FRACTION = 0.75
