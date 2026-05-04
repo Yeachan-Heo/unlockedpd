@@ -114,11 +114,23 @@ def test_profile_schema_requires_resource_metrics():
 def test_profile_comparison_passes_parallel_and_dependency_gates(tmp_path):
     baseline = _profile(
         _case("rolling-wide-10mb", "rolling_mean", speedup=2.0),
-        _case("import-only", "import", selected_path="pandas", selected_path_optimized=False),
+        _case(
+            "import-only",
+            "import",
+            selected_path="pandas",
+            selected_path_optimized=False,
+        ),
     )
     after = _profile(
-        _case("rolling-wide-10mb", "rolling_mean", selected_path="threadpool", speedup=4.2),
-        _case("import-only", "import", selected_path="pandas", selected_path_optimized=False),
+        _case(
+            "rolling-wide-10mb", "rolling_mean", selected_path="threadpool", speedup=4.2
+        ),
+        _case(
+            "import-only",
+            "import",
+            selected_path="pandas",
+            selected_path_optimized=False,
+        ),
     )
     baseline_path = _write_json(tmp_path / "baseline.json", baseline)
     after_path = _write_json(tmp_path / "after.json", after)
@@ -271,4 +283,6 @@ def test_compare_resource_profiles_cli_writes_markdown(tmp_path):
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert markdown_path.exists()
-    assert "Resource Profile Comparison: PASS" in markdown_path.read_text(encoding="utf-8")
+    assert "Resource Profile Comparison: PASS" in markdown_path.read_text(
+        encoding="utf-8"
+    )

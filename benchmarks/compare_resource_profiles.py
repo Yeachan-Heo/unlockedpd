@@ -145,7 +145,9 @@ def _missing_fields(mapping: dict[str, Any], required: Iterable[str]) -> list[st
     return [field for field in required if field not in mapping]
 
 
-def validate_profile_schema(profile: dict[str, Any], label: str) -> list[ComparisonIssue]:
+def validate_profile_schema(
+    profile: dict[str, Any], label: str
+) -> list[ComparisonIssue]:
     """Validate the minimum schema expected by the PRD/test spec."""
 
     issues: list[ComparisonIssue] = []
@@ -161,12 +163,16 @@ def validate_profile_schema(profile: dict[str, Any], label: str) -> list[Compari
 
     cases = profile.get("cases")
     if not isinstance(cases, list) or not cases:
-        issues.append(ComparisonIssue("FAIL", f"{label} must contain non-empty cases[]"))
+        issues.append(
+            ComparisonIssue("FAIL", f"{label} must contain non-empty cases[]")
+        )
         return issues
 
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
-            issues.append(ComparisonIssue("FAIL", f"{label} cases[{index}] is not an object"))
+            issues.append(
+                ComparisonIssue("FAIL", f"{label} cases[{index}] is not an object")
+            )
             continue
 
         case_label = f"{label} {case.get('case_id', f'cases[{index}]')}"
@@ -181,7 +187,9 @@ def validate_profile_schema(profile: dict[str, Any], label: str) -> list[Compari
 
         summary = case.get("summary")
         if not isinstance(summary, dict):
-            issues.append(ComparisonIssue("FAIL", f"{case_label} missing summary object"))
+            issues.append(
+                ComparisonIssue("FAIL", f"{case_label} missing summary object")
+            )
         else:
             missing_summary = _missing_fields(summary, SUMMARY_REQUIRED_FIELDS)
             if missing_summary:
@@ -194,7 +202,9 @@ def validate_profile_schema(profile: dict[str, Any], label: str) -> list[Compari
 
         repeats = case.get("repeats")
         if not isinstance(repeats, list) or not repeats:
-            issues.append(ComparisonIssue("FAIL", f"{case_label} must contain repeats[]"))
+            issues.append(
+                ComparisonIssue("FAIL", f"{case_label} must contain repeats[]")
+            )
             continue
 
         for repeat_index, repeat in enumerate(repeats):
@@ -242,7 +252,11 @@ def _bool_value(value: Any, default: bool = False) -> bool:
 
 def _summary_path(case: dict[str, Any]) -> str:
     summary = case.get("summary", {})
-    for field_name in ("selected_path", "optimized_path", "selected_path_optimized_name"):
+    for field_name in (
+        "selected_path",
+        "optimized_path",
+        "selected_path_optimized_name",
+    ):
         value = summary.get(field_name)
         if value:
             return str(value)
@@ -309,7 +323,9 @@ def _resource_budget_passes(case: dict[str, Any]) -> bool:
 def _is_import_or_warmup_case(case: dict[str, Any]) -> bool:
     case_id = str(case.get("case_id", "")).lower()
     operation = str(case.get("operation", "")).lower()
-    return "import" in case_id or "warmup" in case_id or operation in {"import", "warmup"}
+    return (
+        "import" in case_id or "warmup" in case_id or operation in {"import", "warmup"}
+    )
 
 
 def _compare_case_matrix(
@@ -377,7 +393,9 @@ def _evaluate_after_cases(
 
         if max_ratio > MAX_ACCEPTABLE_OVERHEAD:
             excessive_row = dict(row)
-            excessive_row["fallback_documented"] = uses_fallback and bool(fallback_reason)
+            excessive_row["fallback_documented"] = uses_fallback and bool(
+                fallback_reason
+            )
             result.excessive_overhead_rows.append(excessive_row)
             if not excessive_row["fallback_documented"]:
                 result.issues.append(
@@ -476,7 +494,9 @@ def check_runtime_dependencies(
     result.dependency_rows.append(row)
     if mandatory_psutil:
         result.issues.append(
-            ComparisonIssue("FAIL", "psutil is listed as a mandatory runtime dependency")
+            ComparisonIssue(
+                "FAIL", "psutil is listed as a mandatory runtime dependency"
+            )
         )
 
 
@@ -540,7 +560,10 @@ def render_markdown_report(result: ComparisonResult) -> str:
         "## Issues",
         _markdown_table(
             ["severity", "message"],
-            [{"severity": issue.severity, "message": issue.message} for issue in result.issues],
+            [
+                {"severity": issue.severity, "message": issue.message}
+                for issue in result.issues
+            ],
         ),
         "",
         "## Named parallelism gate",
@@ -587,7 +610,14 @@ def render_markdown_report(result: ComparisonResult) -> str:
         "",
         "## Warmup/import evidence",
         _markdown_table(
-            ["case", "rss_ratio", "cpu_seconds_ratio", "speedup", "selected_path", "reason"],
+            [
+                "case",
+                "rss_ratio",
+                "cpu_seconds_ratio",
+                "speedup",
+                "selected_path",
+                "reason",
+            ],
             result.warmup_rows,
         ),
         "",
@@ -602,8 +632,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compare unlockedpd baseline/after resource profile artifacts."
     )
-    parser.add_argument("--baseline", required=True, type=Path, help="Baseline profile JSON")
-    parser.add_argument("--after", required=True, type=Path, help="After-change profile JSON")
+    parser.add_argument(
+        "--baseline", required=True, type=Path, help="Baseline profile JSON"
+    )
+    parser.add_argument(
+        "--after", required=True, type=Path, help="After-change profile JSON"
+    )
     parser.add_argument(
         "--project",
         type=Path,
