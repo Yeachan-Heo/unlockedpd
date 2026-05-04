@@ -245,6 +245,13 @@ def validate_profile_schema(
                         f"{', '.join(missing_repeat)}",
                     )
                 )
+            if repeat.get("error"):
+                issues.append(
+                    ComparisonIssue(
+                        "FAIL",
+                        f"{case_label} repeats[{repeat_index}] errored: {repeat['error']}",
+                    )
+                )
 
     return issues
 

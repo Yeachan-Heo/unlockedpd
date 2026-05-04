@@ -158,6 +158,15 @@ def test_profile_schema_requires_config_resource_fields():
     assert any("config missing fields: warmup" in issue.message for issue in issues)
 
 
+def test_profile_schema_fails_repeat_errors():
+    profile = _profile(_case("rolling-wide-10mb", "rolling_mean"))
+    profile["cases"][0]["repeats"][1]["error"] = "ModuleNotFoundError: numba"
+
+    issues = validate_profile_schema(profile, "sample")
+
+    assert any("repeats[1] errored" in issue.message for issue in issues)
+
+
 def test_profile_comparison_passes_parallel_and_dependency_gates(tmp_path):
     baseline = _profile(
         _case("rolling-wide-10mb", "rolling_mean", speedup=2.0),
