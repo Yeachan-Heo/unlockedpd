@@ -11,6 +11,7 @@ import pandas as pd
 from .._compat import (
     get_numeric_columns,
     wrap_result,
+    wrap_result_fast,
     ensure_float64,
     ensure_optimal_layout,
 )
@@ -847,6 +848,8 @@ def optimized_rank(
             n_valid = np.sum(~np.isnan(arr), axis=0, keepdims=True)
         result = result / n_valid
 
+    if len(numeric_cols) == df.shape[1]:
+        return wrap_result_fast(result, numeric_df)
     return wrap_result(
         result, numeric_df, columns=numeric_cols, merge_non_numeric=True, original_df=df
     )
