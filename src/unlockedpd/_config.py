@@ -11,6 +11,7 @@ Environment Variables:
     UNLOCKEDPD_PARALLEL_THRESHOLD: Minimum array size for parallel execution (default: 10000)
     UNLOCKEDPD_MAX_MEMORY_OVERHEAD: Maximum optimized-vs-pandas RSS ratio budget (default: 6.0)
     UNLOCKEDPD_MAX_CPU_OVERHEAD: Maximum optimized-vs-pandas CPU seconds ratio budget (default: 6.0)
+    UNLOCKEDPD_WARMUP: Warmup policy: lazy, eager, or none/off (default: lazy)
 """
 import math
 import os
@@ -21,18 +22,44 @@ from typing import Optional, Union
 import numba
 
 
+_WARMUP_ALIASES = {
+    "": "lazy",
+    "auto": "lazy",
+    "lazy": "lazy",
+    "manual": "lazy",
+    "1": "eager",
+    "true": "eager",
+    "yes": "eager",
+    "on": "eager",
+    "full": "eager",
+    "eager": "eager",
+    "import": "eager",
+    "0": "none",
+    "false": "none",
+    "no": "none",
+    "off": "none",
+    "none": "none",
+    "disabled": "none",
+    "disable": "none",
+}
+
+
 def _parse_bool(value: Optional[str], default: bool = False) -> bool:
+    """Parse bool-like env values with a safe default for unset values."""
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _parse_int(value: Optional[str], default: int = 0) -> int:
+def _parse_auto_int(value: Union[int, str, None], default: int = 0) -> int:
+    """Parse a positive int where unset, zero, and 'auto' mean adaptive."""
     if value is None:
         return default
-    value = value.strip().lower()
-    if value in {"", "auto", "none"}:
-        return default
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        if stripped in {"", "0", "auto", "none", "default"}:
+            return 0
+        value = stripped
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -40,7 +67,8 @@ def _parse_int(value: Optional[str], default: int = 0) -> int:
     return parsed if parsed > 0 else 0
 
 
-def _parse_float(value: Optional[str], default: float) -> float:
+def _parse_positive_float(value: Optional[str], default: float) -> float:
+    """Parse a positive finite float env value, falling back on invalid input."""
     if value is None:
         return default
     try:
@@ -50,22 +78,27 @@ def _parse_float(value: Optional[str], default: float) -> float:
     return parsed if math.isfinite(parsed) and parsed > 0 else default
 
 
-def _parse_warmup(value: Optional[str]) -> str:
-    warmup = (value or "lazy").strip().lower()
-    aliases = {
-        "0": "none",
-        "false": "none",
-        "off": "none",
-        "disabled": "none",
-        "disable": "none",
-        "1": "eager",
-        "true": "eager",
-        "on": "eager",
-        "full": "eager",
-        "auto": "lazy",
-    }
-    warmup = aliases.get(warmup, warmup)
-    return warmup if warmup in {"none", "lazy", "eager"} else "lazy"
+def _coerce_positive_float(value: float, name: str) -> float:
+    """Coerce a runtime config value to a positive finite float."""
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+    return parsed
+
+
+def _parse_warmup(value: Optional[str], default: str = "lazy") -> str:
+    """Parse warmup policy env values, falling back on invalid input."""
+    if value is None:
+        return default
+    return _WARMUP_ALIASES.get(value.strip().lower(), default)
+
+
+def _coerce_warmup(value: str) -> str:
+    """Coerce a runtime warmup policy value, raising on invalid input."""
+    parsed = _WARMUP_ALIASES.get(str(value).strip().lower())
+    if parsed is None:
+        raise ValueError("warmup must be one of: lazy, eager, none/off")
+    return parsed
 
 
 @dataclass
@@ -81,6 +114,7 @@ class UnlockedConfig:
         parallel_threshold: Minimum array size before parallel execution is used
         max_memory_overhead: Maximum optimized-vs-pandas RSS ratio budget
         max_cpu_overhead: Maximum optimized-vs-pandas CPU seconds ratio budget
+        warmup: Import warmup policy: lazy, eager, or none
     """
     _enabled: bool = field(default=True, repr=False)
     _num_threads: int = field(default=0, repr=False)
@@ -90,34 +124,22 @@ class UnlockedConfig:
     _parallel_threshold: int = field(default=10_000, repr=False)
     _max_memory_overhead: float = field(default=6.0, repr=False)
     _max_cpu_overhead: float = field(default=6.0, repr=False)
+    _warmup: str = field(default="lazy", repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __post_init__(self):
         """Load configuration from environment variables."""
-        self._enabled = _parse_bool(os.environ.get('UNLOCKEDPD_ENABLED'), True)
-        self._num_threads = _parse_int(os.environ.get('UNLOCKEDPD_NUM_THREADS'), 0)
-        self._threadpool_workers = _parse_int(os.environ.get('UNLOCKEDPD_THREADPOOL_WORKERS'), 0)
-        self._max_memory_overhead = _parse_float(os.environ.get('UNLOCKEDPD_MAX_MEMORY_OVERHEAD'), 6.0)
-        self._max_cpu_overhead = _parse_float(os.environ.get('UNLOCKEDPD_MAX_CPU_OVERHEAD'), 6.0)
-        self._warmup = _parse_warmup(os.environ.get('UNLOCKEDPD_WARMUP'))
-        self._warn_on_fallback = _parse_bool(os.environ.get('UNLOCKEDPD_WARN_ON_FALLBACK'), False)
-        self._cache_compiled = _parse_bool(os.environ.get('UNLOCKEDPD_CACHE_COMPILED'), True)
-        self._parallel_threshold = _parse_int(os.environ.get('UNLOCKEDPD_PARALLEL_THRESHOLD'), 10_000)
+        self._enabled = _parse_bool(os.environ.get("UNLOCKEDPD_ENABLED"), True)
+        self._num_threads = _parse_auto_int(os.environ.get("UNLOCKEDPD_NUM_THREADS"), 0)
+        self._threadpool_workers = _parse_auto_int(os.environ.get("UNLOCKEDPD_THREADPOOL_WORKERS"), 0)
+        self._warn_on_fallback = _parse_bool(os.environ.get("UNLOCKEDPD_WARN_ON_FALLBACK"), False)
+        self._cache_compiled = _parse_bool(os.environ.get("UNLOCKEDPD_CACHE_COMPILED"), True)
+        self._parallel_threshold = _parse_auto_int(os.environ.get("UNLOCKEDPD_PARALLEL_THRESHOLD"), 10_000)
+        self._max_memory_overhead = _parse_positive_float(os.environ.get("UNLOCKEDPD_MAX_MEMORY_OVERHEAD"), 6.0)
+        self._max_cpu_overhead = _parse_positive_float(os.environ.get("UNLOCKEDPD_MAX_CPU_OVERHEAD"), 6.0)
+        self._warmup = _parse_warmup(os.environ.get("UNLOCKEDPD_WARMUP"), "lazy")
 
-        threads_str = os.environ.get('UNLOCKEDPD_NUM_THREADS', '0')
-        self._num_threads = int(threads_str) if threads_str.isdigit() else 0
-
-        self._threadpool_workers = _parse_auto_int(os.environ.get('UNLOCKEDPD_THREADPOOL_WORKERS'), 0)
-
-        self._warn_on_fallback = os.environ.get('UNLOCKEDPD_WARN_ON_FALLBACK', 'false').lower() == 'true'
-
-        threshold_str = os.environ.get('UNLOCKEDPD_PARALLEL_THRESHOLD', '10000')
-        self._parallel_threshold = int(threshold_str) if threshold_str.isdigit() else 10_000
-
-        self._max_memory_overhead = _parse_positive_float_env('UNLOCKEDPD_MAX_MEMORY_OVERHEAD', 6.0)
-        self._max_cpu_overhead = _parse_positive_float_env('UNLOCKEDPD_MAX_CPU_OVERHEAD', 6.0)
-
-        # Apply thread config on initialization
+        # Apply Numba-only thread config on initialization.
         if self._num_threads > 0:
             numba.set_num_threads(self._num_threads)
 
@@ -139,7 +161,7 @@ class UnlockedConfig:
             return self._num_threads
 
     @num_threads.setter
-    def num_threads(self, value: int) -> None:
+    def num_threads(self, value: Union[int, str]) -> None:
         with self._lock:
             parsed = int(value)
             self._num_threads = parsed
@@ -213,48 +235,15 @@ class UnlockedConfig:
             self._max_cpu_overhead = _coerce_positive_float(value, "max_cpu_overhead")
 
     @property
-    def max_memory_overhead(self) -> float:
-        """Maximum optimized-vs-pandas RSS ratio budget."""
+    def warmup(self) -> str:
+        """Warmup policy: 'lazy' (default), 'eager', or 'none'."""
         with self._lock:
-            return self._max_memory_overhead
+            return self._warmup
 
-    @max_memory_overhead.setter
-    def max_memory_overhead(self, value: float) -> None:
+    @warmup.setter
+    def warmup(self, value: str) -> None:
         with self._lock:
-            self._max_memory_overhead = _coerce_positive_float(value, "max_memory_overhead")
-
-    @property
-    def max_cpu_overhead(self) -> float:
-        """Maximum optimized-vs-pandas CPU seconds ratio budget."""
-        with self._lock:
-            return self._max_cpu_overhead
-
-    @max_cpu_overhead.setter
-    def max_cpu_overhead(self, value: float) -> None:
-        with self._lock:
-            self._max_cpu_overhead = _coerce_positive_float(value, "max_cpu_overhead")
-
-    @property
-    def max_memory_overhead(self) -> float:
-        """Maximum optimized-vs-pandas RSS ratio budget."""
-        with self._lock:
-            return self._max_memory_overhead
-
-    @max_memory_overhead.setter
-    def max_memory_overhead(self, value: float) -> None:
-        with self._lock:
-            self._max_memory_overhead = _coerce_positive_float(value, "max_memory_overhead")
-
-    @property
-    def max_cpu_overhead(self) -> float:
-        """Maximum optimized-vs-pandas CPU seconds ratio budget."""
-        with self._lock:
-            return self._max_cpu_overhead
-
-    @max_cpu_overhead.setter
-    def max_cpu_overhead(self, value: float) -> None:
-        with self._lock:
-            self._max_cpu_overhead = _coerce_positive_float(value, "max_cpu_overhead")
+            self._warmup = _coerce_warmup(value)
 
     def apply_thread_config(self) -> None:
         """Apply the current Numba thread configuration."""
@@ -274,6 +263,7 @@ class UnlockedConfig:
                 "parallel_threshold": self._parallel_threshold,
                 "max_memory_overhead": self._max_memory_overhead,
                 "max_cpu_overhead": self._max_cpu_overhead,
+                "warmup": self._warmup,
             }
 
     def __repr__(self) -> str:
@@ -286,7 +276,8 @@ class UnlockedConfig:
                 f"cache_compiled={self._cache_compiled}, "
                 f"parallel_threshold={self._parallel_threshold}, "
                 f"max_memory_overhead={self._max_memory_overhead}, "
-                f"max_cpu_overhead={self._max_cpu_overhead})"
+                f"max_cpu_overhead={self._max_cpu_overhead}, "
+                f"warmup={self._warmup!r})"
             )
 
 
