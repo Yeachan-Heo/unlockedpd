@@ -36,14 +36,13 @@ def _configured_threadpool_workers() -> int:
     try:
         from .._config import config
 
-        configured = _coerce_positive_int(getattr(config, "threadpool_workers", 0))
-    except Exception:
-        configured = 0
-
-    if configured:
-        return configured
-
-    return _coerce_positive_int(os.environ.get("UNLOCKEDPD_THREADPOOL_WORKERS"))
+    try:
+        return resolve_workers(work_units=work_units, operation_cap=operation_cap)
+    except TypeError:
+        # Compatibility with the integration-lane helper shape that accepts a
+        # generic cap rather than explicit work-unit/operation-cap keywords.
+        cap = min(max(1, int(work_units)), max(1, int(operation_cap)))
+        return resolve_workers(operation="threadpool", cap=cap)
 
 
 def resolve_threadpool_workers(
