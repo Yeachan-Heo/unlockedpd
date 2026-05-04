@@ -8,12 +8,12 @@ This module provides optimized expanding window operations using:
 Key insight: NumPy releases the GIL, so ThreadPoolExecutor can achieve
 true parallelism across columns.
 """
+
 import numpy as np
 from numba import njit, prange
 import pandas as pd
-from typing import Union
 from concurrent.futures import ThreadPoolExecutor
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
     simple_result_memory_estimate,
@@ -31,6 +31,7 @@ THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
 # ============================================================================
 # Core Numba-jitted functions (PARALLEL versions)
 # ============================================================================
+
 
 @njit(parallel=True, cache=True)
 def _expanding_sum_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
@@ -254,7 +255,7 @@ def _expanding_skew_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 if m2 > 0:
                     # Pandas bias correction formula
                     adj = np.sqrt(count * (count - 1)) / (count - 2)
-                    result[row, col] = adj * m3 / (m2 ** 1.5)
+                    result[row, col] = adj * m3 / (m2**1.5)
                 else:
                     # Zero variance -> return 0.0 (not NaN)
                     result[row, col] = 0.0
@@ -296,7 +297,12 @@ def _expanding_kurt_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 term1 = delta * delta_n * n_minus_1
 
                 M1 = M1 + delta_n
-                M4 = M4 + term1 * delta_n2 * (n * n - 3 * n + 3) + 6.0 * delta_n2 * M2 - 4.0 * delta_n * M3
+                M4 = (
+                    M4
+                    + term1 * delta_n2 * (n * n - 3 * n + 3)
+                    + 6.0 * delta_n2 * M2
+                    - 4.0 * delta_n * M3
+                )
                 M3 = M3 + term1 * delta_n * (n - 2) - 3.0 * delta_n * M2
                 M2 = M2 + term1
 
@@ -319,9 +325,11 @@ def _expanding_kurt_2d(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
     return result
 
+
 # ============================================================================
 # Core Numba-jitted functions (SERIAL versions for small arrays)
 # ============================================================================
+
 
 @njit(cache=True)
 def _expanding_sum_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
@@ -370,7 +378,9 @@ def _expanding_mean_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
 
 @njit(cache=True)
-def _expanding_std_2d_serial(arr: np.ndarray, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _expanding_std_2d_serial(
+    arr: np.ndarray, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial expanding std using Welford's algorithm for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -399,7 +409,9 @@ def _expanding_std_2d_serial(arr: np.ndarray, min_periods: int, ddof: int = 1) -
 
 
 @njit(cache=True)
-def _expanding_var_2d_serial(arr: np.ndarray, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _expanding_var_2d_serial(
+    arr: np.ndarray, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial expanding variance using Welford's algorithm for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -532,7 +544,7 @@ def _expanding_skew_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 if m2 > 0:
                     # Pandas bias correction formula
                     adj = np.sqrt(count * (count - 1)) / (count - 2)
-                    result[row, col] = adj * m3 / (m2 ** 1.5)
+                    result[row, col] = adj * m3 / (m2**1.5)
                 else:
                     # Zero variance -> return 0.0 (not NaN)
                     result[row, col] = 0.0
@@ -566,7 +578,12 @@ def _expanding_kurt_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
                 term1 = delta * delta_n * n_minus_1
 
                 M1 = M1 + delta_n
-                M4 = M4 + term1 * delta_n2 * (n * n - 3 * n + 3) + 6.0 * delta_n2 * M2 - 4.0 * delta_n * M3
+                M4 = (
+                    M4
+                    + term1 * delta_n2 * (n * n - 3 * n + 3)
+                    + 6.0 * delta_n2 * M2
+                    - 4.0 * delta_n * M3
+                )
                 M3 = M3 + term1 * delta_n * (n - 2) - 3.0 * delta_n * M2
                 M2 = M2 + term1
 
@@ -588,9 +605,11 @@ def _expanding_kurt_2d_serial(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
     return result
 
+
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
 # ============================================================================
+
 
 @njit(nogil=True, cache=True)
 def _expanding_mean_nogil_chunk(arr, result, start_col, end_col, min_periods):
@@ -731,10 +750,12 @@ def _expanding_count_nogil_chunk(arr, result, start_col, end_col, min_periods):
             else:
                 result[row, c] = np.nan
 
+
 # ============================================================================
 # ThreadPool + NumPy cumsum trick for ultra-fast expanding (5x+ speedup)
 # Key insight: NumPy releases GIL, so ThreadPoolExecutor achieves true parallelism
 # ============================================================================
+
 
 def _expanding_mean_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     """Ultra-fast expanding mean using ThreadPool + nogil Numba kernels.
@@ -782,7 +803,9 @@ def _expanding_sum_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     return result
 
 
-def _expanding_std_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _expanding_std_threadpool(
+    arr: np.ndarray, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Ultra-fast expanding std using ThreadPool + nogil Numba kernels."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -800,7 +823,9 @@ def _expanding_std_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
     return result
 
 
-def _expanding_var_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) -> np.ndarray:
+def _expanding_var_threadpool(
+    arr: np.ndarray, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Ultra-fast expanding var using ThreadPool + nogil Numba kernels."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -863,14 +888,19 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
 
     return result
 
+
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
 # ============================================================================
 
+
 def _expanding_sum_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="expanding",
+        )
         return _expanding_sum_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_sum_2d_serial(arr, min_periods)
@@ -880,7 +910,10 @@ def _expanding_sum_dispatch(arr, min_periods):
 def _expanding_mean_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="expanding",
+        )
         return _expanding_mean_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_mean_2d_serial(arr, min_periods)
@@ -890,7 +923,10 @@ def _expanding_mean_dispatch(arr, min_periods):
 def _expanding_std_dispatch(arr, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="expanding",
+        )
         return _expanding_std_threadpool(arr, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_std_2d_serial(arr, min_periods, ddof)
@@ -900,7 +936,10 @@ def _expanding_std_dispatch(arr, min_periods, ddof=1):
 def _expanding_var_dispatch(arr, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="expanding",
+        )
         return _expanding_var_threadpool(arr, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_var_2d_serial(arr, min_periods, ddof)
@@ -910,7 +949,10 @@ def _expanding_var_dispatch(arr, min_periods, ddof=1):
 def _expanding_min_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="expanding",
+        )
         return _expanding_min_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_min_2d_serial(arr, min_periods)
@@ -920,7 +962,10 @@ def _expanding_min_dispatch(arr, min_periods):
 def _expanding_max_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
+            operation="expanding",
+        )
         return _expanding_max_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_max_2d_serial(arr, min_periods)
@@ -947,16 +992,20 @@ def _expanding_kurt_dispatch(arr, min_periods):
         return _expanding_kurt_2d_serial(arr, min_periods)
     return _expanding_kurt_2d(arr, min_periods)
 
+
 # ============================================================================
 # Wrapper functions for pandas Expanding objects
 # ============================================================================
+
 
 def _make_expanding_wrapper(dispatch_func):
     """Factory to create wrapper functions for expanding operations."""
 
     def wrapper(expanding_obj, *args, **kwargs):
         obj = expanding_obj.obj
-        min_periods = expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+        min_periods = (
+            expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+        )
 
         # Only optimize DataFrames
         if not isinstance(obj, pd.DataFrame):
@@ -977,8 +1026,11 @@ def _make_expanding_wrapper(dispatch_func):
         result = dispatch_func(arr, min_periods)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -989,7 +1041,9 @@ def _make_expanding_std_wrapper():
 
     def wrapper(expanding_obj, ddof=1, *args, **kwargs):
         obj = expanding_obj.obj
-        min_periods = expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+        min_periods = (
+            expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+        )
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1008,8 +1062,11 @@ def _make_expanding_std_wrapper():
         result = _expanding_std_dispatch(arr, min_periods, ddof)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -1020,7 +1077,9 @@ def _make_expanding_var_wrapper():
 
     def wrapper(expanding_obj, ddof=1, *args, **kwargs):
         obj = expanding_obj.obj
-        min_periods = expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+        min_periods = (
+            expanding_obj.min_periods if expanding_obj.min_periods is not None else 1
+        )
 
         if not isinstance(obj, pd.DataFrame):
             raise TypeError("Optimization only for DataFrame")
@@ -1039,8 +1098,11 @@ def _make_expanding_var_wrapper():
         result = _expanding_var_dispatch(arr, min_periods, ddof)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -1064,12 +1126,12 @@ def apply_expanding_patches():
 
     Expanding = pd.core.window.expanding.Expanding
 
-    patch(Expanding, 'sum', optimized_expanding_sum)
-    patch(Expanding, 'mean', optimized_expanding_mean)
-    patch(Expanding, 'std', optimized_expanding_std)
-    patch(Expanding, 'var', optimized_expanding_var)
-    patch(Expanding, 'min', optimized_expanding_min)
-    patch(Expanding, 'max', optimized_expanding_max)
-    patch(Expanding, 'count', optimized_expanding_count)
-    patch(Expanding, 'skew', optimized_expanding_skew)
-    patch(Expanding, 'kurt', optimized_expanding_kurt)
+    patch(Expanding, "sum", optimized_expanding_sum)
+    patch(Expanding, "mean", optimized_expanding_mean)
+    patch(Expanding, "std", optimized_expanding_std)
+    patch(Expanding, "var", optimized_expanding_var)
+    patch(Expanding, "min", optimized_expanding_min)
+    patch(Expanding, "max", optimized_expanding_max)
+    patch(Expanding, "count", optimized_expanding_count)
+    patch(Expanding, "skew", optimized_expanding_skew)
+    patch(Expanding, "kurt", optimized_expanding_kurt)

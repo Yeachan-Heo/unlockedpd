@@ -3,11 +3,14 @@
 This module provides Numba-accelerated EWM operations
 that parallelize across columns for significant speedup on wide DataFrames.
 """
+
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from numba import njit, prange
 import pandas as pd
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
     simple_result_memory_estimate,
@@ -19,12 +22,11 @@ from .._resources import (
 PARALLEL_THRESHOLD = 500_000
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements
 
-from concurrent.futures import ThreadPoolExecutor
-
 
 # ============================================================================
 # Helper function to compute alpha parameter
 # ============================================================================
+
 
 def _get_alpha(span=None, halflife=None, alpha=None, com=None):
     """Compute alpha from EWM parameters.
@@ -49,7 +51,9 @@ def _get_alpha(span=None, halflife=None, alpha=None, com=None):
     if params == 0:
         raise ValueError("Must specify one of: span, halflife, alpha, or com")
     if params > 1:
-        raise ValueError("Only one of span, halflife, alpha, or com should be specified")
+        raise ValueError(
+            "Only one of span, halflife, alpha, or com should be specified"
+        )
 
     if alpha is not None:
         if not 0 < alpha <= 1:
@@ -68,12 +72,16 @@ def _get_alpha(span=None, halflife=None, alpha=None, com=None):
             raise ValueError(f"com must be >= 0, got {com}")
         return 1.0 / (1.0 + com)
 
+
 # ============================================================================
 # Core Numba-jitted functions (PARALLEL versions)
 # ============================================================================
 
+
 @njit(parallel=True, cache=True)
-def _ewm_mean_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int) -> np.ndarray:
+def _ewm_mean_2d(
+    arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int
+) -> np.ndarray:
     """Compute EWM mean across columns in parallel.
 
     Args:
@@ -154,7 +162,14 @@ def _ewm_mean_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, m
 
 
 @njit(parallel=True, cache=True)
-def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int, bias: bool) -> np.ndarray:
+def _ewm_var_2d(
+    arr: np.ndarray,
+    alpha: float,
+    adjust: bool,
+    ignore_na: bool,
+    min_periods: int,
+    bias: bool,
+) -> np.ndarray:
     """Compute EWM variance across columns in parallel.
 
     Uses the formula: Var = EWM(x^2) - EWM(x)^2 with bias correction
@@ -221,7 +236,11 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
 
                             # Bias correction: weight_sum^2 / (weight_sum^2 - weight_sum_sq)
                             if not bias and nobs > 1:
-                                var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
+                                var *= (
+                                    weight_sum
+                                    * weight_sum
+                                    / (weight_sum * weight_sum - weight_sum_sq)
+                                )
 
                             last_valid_result = max(0.0, var)
                             result[row, col] = last_valid_result
@@ -280,7 +299,14 @@ def _ewm_var_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
 
 
 @njit(parallel=True, cache=True)
-def _ewm_std_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int, bias: bool) -> np.ndarray:
+def _ewm_std_2d(
+    arr: np.ndarray,
+    alpha: float,
+    adjust: bool,
+    ignore_na: bool,
+    min_periods: int,
+    bias: bool,
+) -> np.ndarray:
     """Compute EWM standard deviation across columns in parallel.
 
     Simply the square root of EWM variance.
@@ -299,12 +325,16 @@ def _ewm_std_2d(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, mi
     var_result = _ewm_var_2d(arr, alpha, adjust, ignore_na, min_periods, bias)
     return np.sqrt(var_result)
 
+
 # ============================================================================
 # Core Numba-jitted functions (SERIAL versions for small arrays)
 # ============================================================================
 
+
 @njit(cache=True)
-def _ewm_mean_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int) -> np.ndarray:
+def _ewm_mean_2d_serial(
+    arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int
+) -> np.ndarray:
     """Serial EWM mean for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -366,7 +396,14 @@ def _ewm_mean_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: 
 
 
 @njit(cache=True)
-def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int, bias: bool) -> np.ndarray:
+def _ewm_var_2d_serial(
+    arr: np.ndarray,
+    alpha: float,
+    adjust: bool,
+    ignore_na: bool,
+    min_periods: int,
+    bias: bool,
+) -> np.ndarray:
     """Serial EWM variance for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -416,7 +453,11 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
                             var = mean_sq - mean * mean
 
                             if not bias and nobs > 1:
-                                var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
+                                var *= (
+                                    weight_sum
+                                    * weight_sum
+                                    / (weight_sum * weight_sum - weight_sum_sq)
+                                )
 
                             last_valid_result = max(0.0, var)
                             result[row, col] = last_valid_result
@@ -471,17 +512,28 @@ def _ewm_var_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: b
 
 
 @njit(cache=True)
-def _ewm_std_2d_serial(arr: np.ndarray, alpha: float, adjust: bool, ignore_na: bool, min_periods: int, bias: bool) -> np.ndarray:
+def _ewm_std_2d_serial(
+    arr: np.ndarray,
+    alpha: float,
+    adjust: bool,
+    ignore_na: bool,
+    min_periods: int,
+    bias: bool,
+) -> np.ndarray:
     """Serial EWM std for small arrays."""
     var_result = _ewm_var_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)
     return np.sqrt(var_result)
+
 
 # ============================================================================
 # Nogil kernels for ThreadPool (GIL-released for true parallelism)
 # ============================================================================
 
+
 @njit(nogil=True, cache=True)
-def _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods):
+def _ewm_mean_nogil_chunk(
+    arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods
+):
     """EWM mean - GIL released for ThreadPool parallelism."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
@@ -538,7 +590,9 @@ def _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore
 
 
 @njit(nogil=True, cache=True)
-def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias):
+def _ewm_var_nogil_chunk(
+    arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias
+):
     """EWM variance - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
@@ -581,7 +635,11 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                             mean_sq = weighted_sum_sq / weight_sum
                             var = mean_sq - mean * mean
                             if not bias and nobs > 1:
-                                var *= weight_sum * weight_sum / (weight_sum * weight_sum - weight_sum_sq)
+                                var *= (
+                                    weight_sum
+                                    * weight_sum
+                                    / (weight_sum * weight_sum - weight_sum_sq)
+                                )
                             last_valid_result = max(0.0, var)
                             result[row, c] = last_valid_result
                     else:
@@ -632,9 +690,11 @@ def _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_
                     else:
                         result[row, c] = np.nan
 
+
 # ============================================================================
 # ThreadPool functions using nogil kernels (4.7x faster than prange!)
 # ============================================================================
+
 
 def _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods):
     """Ultra-fast EWM mean using ThreadPool + nogil kernels."""
@@ -646,7 +706,9 @@ def _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods):
 
     def process_chunk(args):
         start_col, end_col = args
-        _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods)
+        _ewm_mean_nogil_chunk(
+            arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -664,7 +726,9 @@ def _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
 
     def process_chunk(args):
         start_col, end_col = args
-        _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias)
+        _ewm_var_nogil_chunk(
+            arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias
+        )
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
@@ -677,14 +741,18 @@ def _ewm_std_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
     var_result = _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
     return np.sqrt(var_result)
 
+
 # ============================================================================
 # Dispatch functions (choose serial vs parallel based on array size)
 # ============================================================================
 
+
 def _ewm_mean_dispatch(arr, alpha, adjust, ignore_na, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm"
+        )
         return _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_mean_2d_serial(arr, alpha, adjust, ignore_na, min_periods)
@@ -694,7 +762,9 @@ def _ewm_mean_dispatch(arr, alpha, adjust, ignore_na, min_periods):
 def _ewm_var_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm"
+        )
         return _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_var_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)
@@ -704,15 +774,19 @@ def _ewm_var_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
 def _ewm_std_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm")
+        assert_memory_budget(
+            simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm"
+        )
         return _ewm_std_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_std_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)
     return _ewm_std_2d(arr, alpha, adjust, ignore_na, min_periods, bias)
 
+
 # ============================================================================
 # Wrapper functions for pandas EWM objects
 # ============================================================================
+
 
 def _make_ewm_mean_wrapper():
     """Create wrapper for EWM mean."""
@@ -727,10 +801,10 @@ def _make_ewm_mean_wrapper():
 
         # Compute alpha
         alpha = _get_alpha(
-            span=getattr(ewm_obj, 'span', None),
-            halflife=getattr(ewm_obj, 'halflife', None),
-            alpha=getattr(ewm_obj, 'alpha', None),
-            com=getattr(ewm_obj, 'com', None)
+            span=getattr(ewm_obj, "span", None),
+            halflife=getattr(ewm_obj, "halflife", None),
+            alpha=getattr(ewm_obj, "alpha", None),
+            com=getattr(ewm_obj, "com", None),
         )
 
         # Only optimize DataFrames
@@ -751,8 +825,11 @@ def _make_ewm_mean_wrapper():
         result = _ewm_mean_dispatch(arr, alpha, adjust, ignore_na, min_periods)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -771,10 +848,10 @@ def _make_ewm_var_wrapper():
 
         # Compute alpha
         alpha = _get_alpha(
-            span=getattr(ewm_obj, 'span', None),
-            halflife=getattr(ewm_obj, 'halflife', None),
-            alpha=getattr(ewm_obj, 'alpha', None),
-            com=getattr(ewm_obj, 'com', None)
+            span=getattr(ewm_obj, "span", None),
+            halflife=getattr(ewm_obj, "halflife", None),
+            alpha=getattr(ewm_obj, "alpha", None),
+            com=getattr(ewm_obj, "com", None),
         )
 
         if not isinstance(obj, pd.DataFrame):
@@ -793,8 +870,11 @@ def _make_ewm_var_wrapper():
         result = _ewm_var_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -813,10 +893,10 @@ def _make_ewm_std_wrapper():
 
         # Compute alpha
         alpha = _get_alpha(
-            span=getattr(ewm_obj, 'span', None),
-            halflife=getattr(ewm_obj, 'halflife', None),
-            alpha=getattr(ewm_obj, 'alpha', None),
-            com=getattr(ewm_obj, 'com', None)
+            span=getattr(ewm_obj, "span", None),
+            halflife=getattr(ewm_obj, "halflife", None),
+            alpha=getattr(ewm_obj, "alpha", None),
+            com=getattr(ewm_obj, "com", None),
         )
 
         if not isinstance(obj, pd.DataFrame):
@@ -835,8 +915,11 @@ def _make_ewm_std_wrapper():
         result = _ewm_std_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias)
 
         return wrap_result(
-            result, numeric_df, columns=numeric_cols,
-            merge_non_numeric=True, original_df=obj
+            result,
+            numeric_df,
+            columns=numeric_cols,
+            merge_non_numeric=True,
+            original_df=obj,
         )
 
     return wrapper
@@ -854,6 +937,6 @@ def apply_ewm_patches():
 
     ExponentialMovingWindow = pd.core.window.ewm.ExponentialMovingWindow
 
-    patch(ExponentialMovingWindow, 'mean', optimized_ewm_mean)
-    patch(ExponentialMovingWindow, 'var', optimized_ewm_var)
-    patch(ExponentialMovingWindow, 'std', optimized_ewm_std)
+    patch(ExponentialMovingWindow, "mean", optimized_ewm_mean)
+    patch(ExponentialMovingWindow, "var", optimized_ewm_var)
+    patch(ExponentialMovingWindow, "std", optimized_ewm_std)

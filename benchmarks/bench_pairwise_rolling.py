@@ -3,6 +3,7 @@
 Run:
     PYTHONPATH=src python3 benchmarks/bench_pairwise_rolling.py
 """
+
 import gc
 import time
 
@@ -38,9 +39,13 @@ def _bench_case(rows, cols, window):
 
     for op_name in ("corr", "cov"):
         unlockedpd.config.enabled = False
-        pandas_time = _time_call(lambda: getattr(df.rolling(window), op_name)(), repeats=1)
+        pandas_time = _time_call(
+            lambda: getattr(df.rolling(window), op_name)(), repeats=1
+        )
         unlockedpd.config.enabled = True
-        optimized_time = _time_call(lambda: getattr(df.rolling(window), op_name)(), repeats=3)
+        optimized_time = _time_call(
+            lambda: getattr(df.rolling(window), op_name)(), repeats=3
+        )
         speedup = pandas_time / optimized_time if optimized_time else float("inf")
         print(
             f"  rolling_{op_name}: pandas={pandas_time:.4f}s "
@@ -58,4 +63,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

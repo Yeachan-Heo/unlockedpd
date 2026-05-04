@@ -5,6 +5,7 @@ Records pandas-vs-optimized wall time, process CPU seconds, RSS, and thread
 observations in an isolated subprocess per implementation/repeat so patched
 state does not contaminate comparisons.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,7 +21,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,16 +58,40 @@ class CaseSpec:
 def _case_matrix() -> List[CaseSpec]:
     return [
         CaseSpec("import-only", "import_unlockedpd", None, {}, False),
-        CaseSpec("rolling-wide-10mb", "rolling_mean", (1280, 1024), {"window": 20}, True),
-        CaseSpec("rolling-wide-10mb", "rolling_sum", (1280, 1024), {"window": 20}, True),
-        CaseSpec("rolling-medium-100mb", "rolling_mean", (102400, 128), {"window": 20}, True),
-        CaseSpec("rolling-medium-100mb", "rolling_std", (102400, 128), {"window": 20}, True),
+        CaseSpec(
+            "rolling-wide-10mb", "rolling_mean", (1280, 1024), {"window": 20}, True
+        ),
+        CaseSpec(
+            "rolling-wide-10mb", "rolling_sum", (1280, 1024), {"window": 20}, True
+        ),
+        CaseSpec(
+            "rolling-medium-100mb", "rolling_mean", (102400, 128), {"window": 20}, True
+        ),
+        CaseSpec(
+            "rolling-medium-100mb", "rolling_std", (102400, 128), {"window": 20}, True
+        ),
         CaseSpec("expanding-wide-10mb", "expanding_mean", (1280, 1024), {}, True),
-        CaseSpec("aggregation-wide-10mb", "dataframe_mean", (1280, 1024), {"axis": 0}, True),
-        CaseSpec("aggregation-wide-10mb", "dataframe_sum", (1280, 1024), {"axis": 0}, True),
+        CaseSpec(
+            "aggregation-wide-10mb", "dataframe_mean", (1280, 1024), {"axis": 0}, True
+        ),
+        CaseSpec(
+            "aggregation-wide-10mb", "dataframe_sum", (1280, 1024), {"axis": 0}, True
+        ),
         CaseSpec("rank-wide-1mb-control", "rank_axis1", (128, 1024), {"axis": 1}, True),
-        CaseSpec("pairwise-safe-rolling-corr", "rolling_corr", (4096, 64), {"window": 20}, True),
-        CaseSpec("pairwise-safe-rolling-corr", "rolling_cov", (4096, 64), {"window": 20}, True),
+        CaseSpec(
+            "pairwise-safe-rolling-corr",
+            "rolling_corr",
+            (4096, 64),
+            {"window": 20},
+            True,
+        ),
+        CaseSpec(
+            "pairwise-safe-rolling-corr",
+            "rolling_cov",
+            (4096, 64),
+            {"window": 20},
+            True,
+        ),
     ]
 
 
@@ -84,7 +109,9 @@ def _repo_root() -> Path:
 def _module_path_env() -> dict[str, str]:
     env = os.environ.copy()
     src = str(_repo_root() / "src")
-    env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONPATH"] = src + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
     return env
 
 
@@ -124,7 +151,9 @@ class _ThreadSampler:
         self.interval = interval
         self.peak_threads = _thread_count()
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="resource-profiler-sampler", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="resource-profiler-sampler", daemon=True
+        )
 
     def __enter__(self) -> "_ThreadSampler":
         self._thread.start()
@@ -143,20 +172,29 @@ class _ThreadSampler:
 def _resource_config_snapshot() -> Dict[str, Any]:
     try:
         import unlockedpd
+
         cfg = unlockedpd.config
         return {
             "num_threads": cfg.num_threads,
             "threadpool_workers": getattr(cfg, "threadpool_workers", 0) or "auto",
             "max_memory_overhead": getattr(cfg, "max_memory_overhead", 6.0),
             "max_cpu_overhead": getattr(cfg, "max_cpu_overhead", 6.0),
-            "warmup": getattr(cfg, "warmup", os.environ.get("UNLOCKEDPD_WARMUP", "legacy_eager")),
+            "warmup": getattr(
+                cfg, "warmup", os.environ.get("UNLOCKEDPD_WARMUP", "legacy_eager")
+            ),
         }
     except Exception:
         return {
             "num_threads": int(os.environ.get("UNLOCKEDPD_NUM_THREADS", "0") or 0),
-            "threadpool_workers": os.environ.get("UNLOCKEDPD_THREADPOOL_WORKERS", "auto"),
-            "max_memory_overhead": float(os.environ.get("UNLOCKEDPD_MAX_MEMORY_OVERHEAD", "6.0") or 6.0),
-            "max_cpu_overhead": float(os.environ.get("UNLOCKEDPD_MAX_CPU_OVERHEAD", "6.0") or 6.0),
+            "threadpool_workers": os.environ.get(
+                "UNLOCKEDPD_THREADPOOL_WORKERS", "auto"
+            ),
+            "max_memory_overhead": float(
+                os.environ.get("UNLOCKEDPD_MAX_MEMORY_OVERHEAD", "6.0") or 6.0
+            ),
+            "max_cpu_overhead": float(
+                os.environ.get("UNLOCKEDPD_MAX_CPU_OVERHEAD", "6.0") or 6.0
+            ),
             "warmup": os.environ.get("UNLOCKEDPD_WARMUP", "legacy_eager"),
         }
 
@@ -173,7 +211,9 @@ def _memory_total_bytes() -> int:
 def _git_snapshot() -> Dict[str, Any]:
     def run(cmd: List[str]) -> str:
         try:
-            return subprocess.check_output(cmd, cwd=_repo_root(), text=True, stderr=subprocess.DEVNULL).strip()
+            return subprocess.check_output(
+                cmd, cwd=_repo_root(), text=True, stderr=subprocess.DEVNULL
+            ).strip()
         except Exception:
             return ""
 
@@ -203,7 +243,9 @@ def _dataframe(shape: tuple[int, int], seed: int):
     return pd.DataFrame(arr, columns=[f"c{i}" for i in range(shape[1])])
 
 
-def _run_operation(spec: Dict[str, Any], seed: int, implementation: str) -> Tuple[Any, str]:
+def _run_operation(
+    spec: Dict[str, Any], seed: int, implementation: str
+) -> Tuple[Any, str]:
     operation = spec["operation"]
     shape = tuple(spec["shape"]) if spec.get("shape") else None
     params = spec.get("params") or {}
@@ -216,8 +258,10 @@ def _run_operation(spec: Dict[str, Any], seed: int, implementation: str) -> Tupl
     if operation == "import_unlockedpd":
         if implementation == "optimized":
             import unlockedpd  # noqa: F401
+
             return "imported", "optimized_import"
         import pandas as pd  # noqa: F401
+
         return "imported", "pandas"
 
     if shape is None:
@@ -253,6 +297,7 @@ def _run_operation(spec: Dict[str, Any], seed: int, implementation: str) -> Tupl
     if implementation == "optimized":
         try:
             from unlockedpd._resources import get_last_selected_path
+
             selected_path = get_last_selected_path() or selected_path
         except Exception:
             pass
@@ -268,13 +313,19 @@ def _checksum(result: Any) -> Dict[str, Any]:
 
     if isinstance(result, (pd.DataFrame, pd.Series)):
         values = result.to_numpy(dtype=float, copy=False)
-        return {"shape": list(result.shape), "nanmean": float(np.nanmean(values)) if values.size else math.nan}
+        return {
+            "shape": list(result.shape),
+            "nanmean": float(np.nanmean(values)) if values.size else math.nan,
+        }
     return {"repr": repr(result)[:80]}
 
 
 def _infer_selected_path(operation: str, shape: tuple[int, int]) -> str:
     n = shape[0] * shape[1]
-    if operation.startswith("rolling_") and operation not in {"rolling_corr", "rolling_cov"}:
+    if operation.startswith("rolling_") and operation not in {
+        "rolling_corr",
+        "rolling_cov",
+    }:
         if n >= 10_000_000:
             return "threadpool"
         if n >= 500_000:
@@ -310,6 +361,7 @@ def _worker_main(args: argparse.Namespace) -> int:
 
     if mode == "warm" and implementation == "optimized":
         import unlockedpd
+
         if getattr(unlockedpd.config, "warmup", "lazy") in {"eager", "full"}:
             unlockedpd._warmup_all()
 
@@ -321,7 +373,9 @@ def _worker_main(args: argparse.Namespace) -> int:
     checksum: Any = None
     try:
         with _ThreadSampler() as sampler:
-            checksum, selected_path = _run_operation(spec, args.worker_seed, implementation)
+            checksum, selected_path = _run_operation(
+                spec, args.worker_seed, implementation
+            )
         peak_threads = max(1, sampler.peak_threads - 1)  # subtract sampler thread
     except Exception as exc:  # worker reports failure as data so driver can continue
         error = f"{type(exc).__name__}: {exc}"
@@ -350,7 +404,9 @@ def _worker_main(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_worker(spec: CaseSpec, seed: int, repeat: int, mode: str, implementation: str) -> Dict[str, Any]:
+def _run_worker(
+    spec: CaseSpec, seed: int, repeat: int, mode: str, implementation: str
+) -> Dict[str, Any]:
     env = _module_path_env()
     cmd = [
         sys.executable,
@@ -365,7 +421,9 @@ def _run_worker(spec: CaseSpec, seed: int, repeat: int, mode: str, implementatio
         implementation,
     ]
     start = time.perf_counter()
-    proc = subprocess.run(cmd, cwd=_repo_root(), env=env, text=True, capture_output=True)
+    proc = subprocess.run(
+        cmd, cwd=_repo_root(), env=env, text=True, capture_output=True
+    )
     duration = time.perf_counter() - start
     if proc.returncode != 0:
         return {
@@ -378,7 +436,9 @@ def _run_worker(spec: CaseSpec, seed: int, repeat: int, mode: str, implementatio
             "rss_delta_bytes": 0,
             "peak_threads": 0,
             "final_threads": 0,
-            "error": proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}",
+            "error": proc.stderr.strip()
+            or proc.stdout.strip()
+            or f"exit {proc.returncode}",
         }
     line = proc.stdout.strip().splitlines()[-1]
     try:
@@ -404,35 +464,90 @@ def _safe_ratio(numerator: float, denominator: float) -> Optional[float]:
     return numerator / denominator
 
 
-def _summarize(records: list[Dict[str, Any]], parallelism_gate: bool, max_memory: float, max_cpu: float) -> Dict[str, Any]:
-    pandas = [r for r in records if r.get("implementation") == "pandas" and not r.get("error")]
-    opt = [r for r in records if r.get("implementation") == "optimized" and not r.get("error")]
+def _summarize(
+    records: list[Dict[str, Any]],
+    parallelism_gate: bool,
+    max_memory: float,
+    max_cpu: float,
+) -> Dict[str, Any]:
+    pandas = [
+        r for r in records if r.get("implementation") == "pandas" and not r.get("error")
+    ]
+    opt = [
+        r
+        for r in records
+        if r.get("implementation") == "optimized" and not r.get("error")
+    ]
 
     def mean(items: List[float]) -> Optional[float]:
         return sum(items) / len(items) if items else None
 
     pandas_wall = mean([float(r["wall_seconds"]) for r in pandas])
     opt_wall = mean([float(r["wall_seconds"]) for r in opt])
-    pandas_cpu = mean([float(r["user_cpu_seconds"]) + float(r["system_cpu_seconds"]) for r in pandas])
-    opt_cpu = mean([float(r["user_cpu_seconds"]) + float(r["system_cpu_seconds"]) for r in opt])
-    pandas_rss = mean([max(1.0, abs(float(r.get("rss_delta_bytes", 0))) or float(r.get("peak_rss_bytes", 0))) for r in pandas])
-    opt_rss = mean([max(1.0, abs(float(r.get("rss_delta_bytes", 0))) or float(r.get("peak_rss_bytes", 0))) for r in opt])
-    speedup = _safe_ratio(pandas_wall or 0.0, opt_wall or 0.0) if pandas_wall is not None and opt_wall is not None else None
-    cpu_ratio = _safe_ratio(opt_cpu or 0.0, pandas_cpu or 0.0) if pandas_cpu is not None and opt_cpu is not None else None
-    rss_ratio = _safe_ratio(opt_rss or 0.0, pandas_rss or 0.0) if pandas_rss is not None and opt_rss is not None else None
+    pandas_cpu = mean(
+        [float(r["user_cpu_seconds"]) + float(r["system_cpu_seconds"]) for r in pandas]
+    )
+    opt_cpu = mean(
+        [float(r["user_cpu_seconds"]) + float(r["system_cpu_seconds"]) for r in opt]
+    )
+    pandas_rss = mean(
+        [
+            max(
+                1.0,
+                abs(float(r.get("rss_delta_bytes", 0)))
+                or float(r.get("peak_rss_bytes", 0)),
+            )
+            for r in pandas
+        ]
+    )
+    opt_rss = mean(
+        [
+            max(
+                1.0,
+                abs(float(r.get("rss_delta_bytes", 0)))
+                or float(r.get("peak_rss_bytes", 0)),
+            )
+            for r in opt
+        ]
+    )
+    speedup = (
+        _safe_ratio(pandas_wall or 0.0, opt_wall or 0.0)
+        if pandas_wall is not None and opt_wall is not None
+        else None
+    )
+    cpu_ratio = (
+        _safe_ratio(opt_cpu or 0.0, pandas_cpu or 0.0)
+        if pandas_cpu is not None and opt_cpu is not None
+        else None
+    )
+    rss_ratio = (
+        _safe_ratio(opt_rss or 0.0, pandas_rss or 0.0)
+        if pandas_rss is not None and opt_rss is not None
+        else None
+    )
     selected_paths = sorted({str(r.get("selected_path", "unknown")) for r in opt})
-    selected_parallel = any(p in {"threadpool", "parallel_numba"} for p in selected_paths)
-    resource_ok = (cpu_ratio is None or cpu_ratio <= max_cpu) and (rss_ratio is None or rss_ratio <= max_memory)
+    selected_parallel = any(
+        p in {"threadpool", "parallel_numba"} for p in selected_paths
+    )
+    resource_ok = (cpu_ratio is None or cpu_ratio <= max_cpu) and (
+        rss_ratio is None or rss_ratio <= max_memory
+    )
     return {
         "pandas_wall_seconds": pandas_wall,
         "optimized_wall_seconds": opt_wall,
         "speedup": speedup,
         "cpu_seconds_ratio": cpu_ratio,
         "rss_ratio": rss_ratio,
-        "selected_path_optimized": selected_paths[0] if len(selected_paths) == 1 else selected_paths,
+        "selected_path_optimized": selected_paths[0]
+        if len(selected_paths) == 1
+        else selected_paths,
         "pass_resource_budget": bool(resource_ok),
-        "pass_parallelism_gate": bool((not parallelism_gate) or selected_parallel or not resource_ok),
-        "fallback_reason": None if resource_ok else f"resource budget exceeded: cpu_ratio={cpu_ratio}, rss_ratio={rss_ratio}",
+        "pass_parallelism_gate": bool(
+            (not parallelism_gate) or selected_parallel or not resource_ok
+        ),
+        "fallback_reason": None
+        if resource_ok
+        else f"resource budget exceeded: cpu_ratio={cpu_ratio}, rss_ratio={rss_ratio}",
     }
 
 
@@ -442,7 +557,13 @@ def _load_comparisons(patterns: List[str]) -> list[Dict[str, Any]]:
         for path in sorted(glob.glob(pattern)):
             try:
                 data = json.loads(Path(path).read_text())
-                loaded.append({"path": path, "run_id": data.get("run_id"), "schema_version": data.get("schema_version")})
+                loaded.append(
+                    {
+                        "path": path,
+                        "run_id": data.get("run_id"),
+                        "schema_version": data.get("schema_version"),
+                    }
+                )
             except Exception as exc:
                 loaded.append({"path": path, "error": str(exc)})
     return loaded
@@ -457,7 +578,12 @@ def _driver_main(args: argparse.Namespace) -> int:
     patterns = args.case_filter or []
     selected_specs = [spec for spec in _case_matrix() if _matches_case(spec, patterns)]
     if args.max_case_elements:
-        selected_specs = [spec for spec in selected_specs if spec.shape is None or spec.shape[0] * spec.shape[1] <= args.max_case_elements]
+        selected_specs = [
+            spec
+            for spec in selected_specs
+            if spec.shape is None
+            or spec.shape[0] * spec.shape[1] <= args.max_case_elements
+        ]
 
     modes = ["cold", "warm"] if args.cold_and_warm else ["warm"]
     cases = []
@@ -476,7 +602,9 @@ def _driver_main(args: argparse.Namespace) -> int:
             case["seed"] = args.seed
             case["mode"] = mode
             case["repeats"] = repeats
-            case["summary"] = _summarize(repeats, spec.parallelism_gate, max_memory, max_cpu)
+            case["summary"] = _summarize(
+                repeats, spec.parallelism_gate, max_memory, max_cpu
+            )
             cases.append(case)
             print(f"profiled {spec.case_id}:{spec.operation}:{mode}", file=sys.stderr)
 
@@ -506,18 +634,33 @@ def _driver_main(args: argparse.Namespace) -> int:
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Profile unlockedpd resource overhead vs pandas")
+    parser = argparse.ArgumentParser(
+        description="Profile unlockedpd resource overhead vs pandas"
+    )
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--cold-and-warm", action="store_true")
     parser.add_argument("--output")
     parser.add_argument("--compare", nargs="*", default=[])
-    parser.add_argument("--case-filter", action="append", help="glob matched against case_id, operation, or case_id:operation")
-    parser.add_argument("--max-case-elements", type=int, default=0, help="optional local-smoke size guard")
+    parser.add_argument(
+        "--case-filter",
+        action="append",
+        help="glob matched against case_id, operation, or case_id:operation",
+    )
+    parser.add_argument(
+        "--max-case-elements",
+        type=int,
+        default=0,
+        help="optional local-smoke size guard",
+    )
     parser.add_argument("--_worker-case", dest="worker_case")
     parser.add_argument("--_worker-seed", dest="worker_seed", type=int, default=0)
     parser.add_argument("--_worker-mode", dest="worker_mode", choices=["cold", "warm"])
-    parser.add_argument("--_worker-implementation", dest="worker_implementation", choices=["pandas", "optimized"])
+    parser.add_argument(
+        "--_worker-implementation",
+        dest="worker_implementation",
+        choices=["pandas", "optimized"],
+    )
     return parser.parse_args(argv)
 
 

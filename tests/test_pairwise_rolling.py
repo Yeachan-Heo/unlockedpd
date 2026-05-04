@@ -1,4 +1,5 @@
 """Focused tests for rolling pairwise corr/cov resource guards."""
+
 import numpy as np
 import pandas as pd
 import pytest
