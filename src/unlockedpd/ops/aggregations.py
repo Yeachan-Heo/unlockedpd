@@ -58,7 +58,7 @@ def _numpy_no_missing_reduction(arr, op, axis, skipna, ddof=1):
     return None
 
 
-def _bounded_numba_axis1(kernel, arr, *args):
+def _bounded_numba_axis1(kernel, arr, *args, cap=8):
     """Run row-parallel Numba kernels with a memory-bandwidth-aware thread cap."""
 
     from .._config import config
@@ -67,7 +67,13 @@ def _bounded_numba_axis1(kernel, arr, *args):
     target_threads = (
         configured
         if configured > 0
-        else resolve_threadpool_workers(arr.shape[0], operation="aggregation")
+        else resolve_threadpool_workers(
+            arr.shape[0],
+            operation="aggregation",
+            operation_cap=cap,
+            memory_bandwidth_cap=cap,
+            cap=cap,
+        )
     )
     current_threads = get_num_threads()
     # Never raise the active Numba thread count implicitly; only cap it to avoid
@@ -668,7 +674,7 @@ def _var_dispatch(arr, skipna, axis, ddof):
     if axis == 1:
         if arr.size >= PARALLEL_THRESHOLD:
             record_dispatch_path("parallel_numba")
-            return _bounded_numba_axis1(_var_axis1_parallel, arr, skipna, ddof)
+            return _bounded_numba_axis1(_var_axis1_parallel, arr, skipna, ddof, cap=16)
         arr = arr.T
     else:
         fast = _numpy_no_missing_reduction(arr, "var", 0, skipna, ddof)
@@ -786,7 +792,7 @@ def _std_dispatch(arr, skipna, axis, ddof):
     if axis == 1:
         if arr.size >= PARALLEL_THRESHOLD:
             record_dispatch_path("parallel_numba")
-            return _bounded_numba_axis1(_std_axis1_parallel, arr, skipna, ddof)
+            return _bounded_numba_axis1(_std_axis1_parallel, arr, skipna, ddof, cap=16)
         arr = arr.T
     else:
         fast = _numpy_no_missing_reduction(arr, "std", 0, skipna, ddof)

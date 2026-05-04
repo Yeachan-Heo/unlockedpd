@@ -1,5 +1,5 @@
 """Tests for rolling operations."""
-import pytest
+
 import pandas as pd
 import numpy as np
 
@@ -25,10 +25,9 @@ class TestRollingMean:
         """Test rolling mean handles NaN correctly."""
         import unlockedpd
 
-        df = pd.DataFrame({
-            'a': [1.0, np.nan, 3.0, 4.0, 5.0],
-            'b': [np.nan, 2.0, 3.0, np.nan, 5.0]
-        })
+        df = pd.DataFrame(
+            {"a": [1.0, np.nan, 3.0, 4.0, 5.0], "b": [np.nan, 2.0, 3.0, np.nan, 5.0]}
+        )
 
         unlockedpd.config.enabled = False
         expected = df.rolling(3).mean()
@@ -80,6 +79,23 @@ class TestRollingMean:
 
         pd.testing.assert_frame_equal(result, expected)
 
+    def test_large_rolling_mean_uses_bounded_parallel_path(self):
+        """Large rolling mean uses the bounded O(n) Numba path."""
+        import unlockedpd
+        from unlockedpd._resources import get_last_selected_path
+
+        rng = np.random.default_rng(123)
+        df = pd.DataFrame(rng.standard_normal((1024, 512)))
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(20).mean()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(20).mean()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-12, atol=1e-12)
+        assert get_last_selected_path() == "parallel_numba"
+
 
 class TestRollingSum:
     """Tests for rolling().sum()"""
@@ -95,6 +111,25 @@ class TestRollingSum:
 
         unlockedpd.config.enabled = True
         result = df.rolling(5).sum()
+
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_rolling_sum_inf_semantics(self):
+        """Rolling sum preserves pandas NaN result for windows containing inf."""
+        import unlockedpd
+
+        df = pd.DataFrame(
+            {
+                "a": [1.0, np.inf, 3.0, 4.0],
+                "b": [1.0, -np.inf, np.nan, 4.0],
+            }
+        )
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(2, min_periods=1).sum()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(2, min_periods=1).sum()
 
         pd.testing.assert_frame_equal(result, expected)
 
@@ -129,6 +164,37 @@ class TestRollingStd:
         result = df.rolling(5).std(ddof=0)
 
         pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
+
+    def test_rolling_std_ignores_inf_like_pandas(self):
+        """Rolling std treats inf like missing data for moment calculations."""
+        import unlockedpd
+
+        df = pd.DataFrame({"a": [1.0, np.inf, 3.0, 4.0, 5.0]})
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(3, min_periods=2).std()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(3, min_periods=2).std()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10)
+
+    def test_large_rolling_std_uses_bounded_parallel_path(self):
+        """Large rolling std avoids unbounded Numba thread oversubscription."""
+        import unlockedpd
+        from unlockedpd._resources import get_last_selected_path
+
+        rng = np.random.default_rng(321)
+        df = pd.DataFrame(rng.standard_normal((1024, 512)))
+
+        unlockedpd.config.enabled = False
+        expected = df.rolling(20).std()
+
+        unlockedpd.config.enabled = True
+        result = df.rolling(20).std()
+
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-10, atol=1e-10)
+        assert get_last_selected_path() == "parallel_numba"
 
 
 class TestRollingMinMax:
@@ -170,7 +236,7 @@ class TestRollingSem:
         """Test basic rolling sem matches pandas."""
         import unlockedpd
 
-        df = pd.DataFrame({'a': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]})
+        df = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]})
 
         unlockedpd.config.enabled = False
         expected = df.rolling(3).sem()
@@ -184,7 +250,7 @@ class TestRollingSem:
         """Test rolling sem handles NaN correctly."""
         import unlockedpd
 
-        df = pd.DataFrame({'a': [1.0, np.nan, 3.0, 4.0, 5.0]})
+        df = pd.DataFrame({"a": [1.0, np.nan, 3.0, 4.0, 5.0]})
 
         unlockedpd.config.enabled = False
         expected = df.rolling(3).sem()
@@ -198,7 +264,7 @@ class TestRollingSem:
         """Test rolling sem with min_periods."""
         import unlockedpd
 
-        df = pd.DataFrame({'a': [1.0, 2.0, 3.0, 4.0, 5.0]})
+        df = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0, 5.0]})
 
         unlockedpd.config.enabled = False
         expected = df.rolling(3, min_periods=2).sem()
@@ -234,10 +300,12 @@ class TestMixedDtypes:
         """
         import unlockedpd
 
-        df = pd.DataFrame({
-            'numeric1': [1.0, 2.0, 3.0, 4.0, 5.0],
-            'numeric2': [10.0, 20.0, 30.0, 40.0, 50.0],
-        })
+        df = pd.DataFrame(
+            {
+                "numeric1": [1.0, 2.0, 3.0, 4.0, 5.0],
+                "numeric2": [10.0, 20.0, 30.0, 40.0, 50.0],
+            }
+        )
 
         unlockedpd.config.enabled = False
         expected = df.rolling(2).mean()

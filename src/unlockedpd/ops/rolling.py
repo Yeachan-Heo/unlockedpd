@@ -10,7 +10,7 @@ achieves true parallelism with Numba's fast compiled code.
 """
 
 import numpy as np
-from numba import njit, prange
+from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
 
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
+    record_dispatch_path,
+    resolve_threadpool_workers,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -35,6 +37,37 @@ PARALLEL_THRESHOLD = 500_000
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
 
 
+def _bounded_numba_rolling(kernel, arr, *args, cap=8):
+    """Run rolling prange kernels with a memory-bandwidth-aware thread cap."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        configured
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[1],
+            operation="rolling",
+            operation_cap=cap,
+            memory_bandwidth_cap=cap,
+            cap=cap,
+        )
+    )
+    current_threads = get_num_threads()
+    target_threads = max(1, min(int(target_threads), int(current_threads)))
+
+    record_dispatch_path("parallel_numba")
+    if target_threads == current_threads:
+        return kernel(arr, *args)
+
+    set_num_threads(target_threads)
+    try:
+        return kernel(arr, *args)
+    finally:
+        set_num_threads(current_threads)
+
+
 # ============================================================================
 # Core Numba-jitted functions (PARALLEL versions)
 # ============================================================================
@@ -42,68 +75,56 @@ THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
 
 @njit(parallel=True, cache=True)
 def _rolling_sum_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
-    """Compute rolling sum across columns in parallel."""
+    """Compute rolling sum across columns in parallel with O(n) window updates."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
     for col in prange(n_cols):
+        cumsum = 0.0
+        count = 0
         for row in range(n_rows):
-            if row < min_periods - 1:
-                continue
+            val = arr[row, col]
+            if np.isfinite(val):
+                count += 1
+                cumsum += val
 
-            start = max(0, row - window + 1)
-            cumsum = 0.0
-            count = 0
-            has_inf = False
-
-            for k in range(start, row + 1):
-                val = arr[k, col]
-                if not np.isnan(val):
-                    if np.isinf(val):
-                        has_inf = True
-                    cumsum += val
-                    count += 1
+            if row >= window:
+                old_val = arr[row - window, col]
+                if np.isfinite(old_val):
+                    count -= 1
+                    cumsum -= old_val
 
             if count >= min_periods:
-                if has_inf:
-                    result[row, col] = np.nan
-                else:
-                    result[row, col] = cumsum
+                result[row, col] = cumsum
 
     return result
 
 
 @njit(parallel=True, cache=True)
 def _rolling_mean_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarray:
-    """Compute rolling mean across columns in parallel."""
+    """Compute rolling mean across columns in parallel with O(n) window updates."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
     for col in prange(n_cols):
+        cumsum = 0.0
+        count = 0
         for row in range(n_rows):
-            if row < min_periods - 1:
-                continue
+            val = arr[row, col]
+            if np.isfinite(val):
+                count += 1
+                cumsum += val
 
-            start = max(0, row - window + 1)
-            cumsum = 0.0
-            count = 0
-            has_inf = False
+            if row >= window:
+                old_val = arr[row - window, col]
+                if np.isfinite(old_val):
+                    count -= 1
+                    cumsum -= old_val
 
-            for k in range(start, row + 1):
-                val = arr[k, col]
-                if not np.isnan(val):
-                    if np.isinf(val):
-                        has_inf = True
-                    cumsum += val
-                    count += 1
-
-            if count >= min_periods:
-                if has_inf:
-                    result[row, col] = np.nan
-                else:
-                    result[row, col] = cumsum / count
+            if count >= min_periods and count > 0:
+                result[row, col] = cumsum / count
 
     return result
 
@@ -342,34 +363,28 @@ def _rolling_max_2d(arr: np.ndarray, window: int, min_periods: int) -> np.ndarra
 def _rolling_sum_2d_serial(
     arr: np.ndarray, window: int, min_periods: int
 ) -> np.ndarray:
-    """Serial rolling sum for small arrays."""
+    """Serial rolling sum for small arrays with O(n) window updates."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
     for col in range(n_cols):
+        cumsum = 0.0
+        count = 0
         for row in range(n_rows):
-            if row < min_periods - 1:
-                continue
+            val = arr[row, col]
+            if np.isfinite(val):
+                count += 1
+                cumsum += val
 
-            start = max(0, row - window + 1)
-            cumsum = 0.0
-            count = 0
-            has_inf = False
-
-            for k in range(start, row + 1):
-                val = arr[k, col]
-                if not np.isnan(val):
-                    if np.isinf(val):
-                        has_inf = True
-                    cumsum += val
-                    count += 1
+            if row >= window:
+                old_val = arr[row - window, col]
+                if np.isfinite(old_val):
+                    count -= 1
+                    cumsum -= old_val
 
             if count >= min_periods:
-                if has_inf:
-                    result[row, col] = np.nan
-                else:
-                    result[row, col] = cumsum
+                result[row, col] = cumsum
 
     return result
 
@@ -378,34 +393,28 @@ def _rolling_sum_2d_serial(
 def _rolling_mean_2d_serial(
     arr: np.ndarray, window: int, min_periods: int
 ) -> np.ndarray:
-    """Serial rolling mean for small arrays."""
+    """Serial rolling mean for small arrays with O(n) window updates."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
     for col in range(n_cols):
+        cumsum = 0.0
+        count = 0
         for row in range(n_rows):
-            if row < min_periods - 1:
-                continue
+            val = arr[row, col]
+            if np.isfinite(val):
+                count += 1
+                cumsum += val
 
-            start = max(0, row - window + 1)
-            cumsum = 0.0
-            count = 0
-            has_inf = False
+            if row >= window:
+                old_val = arr[row - window, col]
+                if np.isfinite(old_val):
+                    count -= 1
+                    cumsum -= old_val
 
-            for k in range(start, row + 1):
-                val = arr[k, col]
-                if not np.isnan(val):
-                    if np.isinf(val):
-                        has_inf = True
-                    cumsum += val
-                    count += 1
-
-            if count >= min_periods:
-                if has_inf:
-                    result[row, col] = np.nan
-                else:
-                    result[row, col] = cumsum / count
+            if count >= min_periods and count > 0:
+                result[row, col] = cumsum / count
 
     return result
 
@@ -583,64 +592,50 @@ def _rolling_max_2d_serial(
 
 @njit(nogil=True, cache=True)
 def _rolling_mean_nogil_chunk(arr, result, start_col, end_col, window, min_periods):
-    """Process chunk of columns for rolling mean - GIL released."""
+    """Process rolling mean chunk with O(n) updates - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
+        cumsum = 0.0
+        count = 0
         for row in range(n_rows):
-            if row < min_periods - 1:
-                result[row, c] = np.nan
-                continue
+            val = arr[row, c]
+            if np.isfinite(val):
+                count += 1
+                cumsum += val
 
-            start = max(0, row - window + 1)
-            cumsum = 0.0
-            count = 0
-            has_inf = False
+            if row >= window:
+                old_val = arr[row - window, c]
+                if np.isfinite(old_val):
+                    count -= 1
+                    cumsum -= old_val
 
-            for k in range(start, row + 1):
-                val = arr[k, c]
-                if not np.isnan(val):
-                    if np.isinf(val):
-                        has_inf = True
-                    cumsum += val
-                    count += 1
-
-            if count >= min_periods:
-                if has_inf:
-                    result[row, c] = np.nan
-                else:
-                    result[row, c] = cumsum / count
+            if count >= min_periods and count > 0:
+                result[row, c] = cumsum / count
             else:
                 result[row, c] = np.nan
 
 
 @njit(nogil=True, cache=True)
 def _rolling_sum_nogil_chunk(arr, result, start_col, end_col, window, min_periods):
-    """Process chunk of columns for rolling sum - GIL released."""
+    """Process rolling sum chunk with O(n) updates - GIL released."""
     n_rows = arr.shape[0]
     for c in range(start_col, end_col):
+        cumsum = 0.0
+        count = 0
         for row in range(n_rows):
-            if row < min_periods - 1:
-                result[row, c] = np.nan
-                continue
+            val = arr[row, c]
+            if np.isfinite(val):
+                count += 1
+                cumsum += val
 
-            start = max(0, row - window + 1)
-            cumsum = 0.0
-            count = 0
-            has_inf = False
-
-            for k in range(start, row + 1):
-                val = arr[k, c]
-                if not np.isnan(val):
-                    if np.isinf(val):
-                        has_inf = True
-                    cumsum += val
-                    count += 1
+            if row >= window:
+                old_val = arr[row - window, c]
+                if np.isfinite(old_val):
+                    count -= 1
+                    cumsum -= old_val
 
             if count >= min_periods:
-                if has_inf:
-                    result[row, c] = np.nan
-                else:
-                    result[row, c] = cumsum
+                result[row, c] = cumsum
             else:
                 result[row, c] = np.nan
 
@@ -1534,8 +1529,9 @@ def _rolling_sum_dispatch(arr, window, min_periods):
         )
         return _rolling_sum_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_sum_2d_serial(arr, window, min_periods)
-    return _rolling_sum_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_sum_2d, arr, window, min_periods, cap=8)
 
 
 def _rolling_mean_dispatch(arr, window, min_periods):
@@ -1547,34 +1543,29 @@ def _rolling_mean_dispatch(arr, window, min_periods):
         )
         return _rolling_mean_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_mean_2d_serial(arr, window, min_periods)
-    return _rolling_mean_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_mean_2d, arr, window, min_periods, cap=8)
 
 
 def _rolling_std_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
-    if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(
-            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
-            operation="rolling",
-        )
-        return _rolling_std_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return rolling_std_welford_serial(arr, window, min_periods, ddof)
-    return rolling_std_welford_parallel(arr, window, min_periods, ddof)
+    return _bounded_numba_rolling(
+        rolling_std_welford_parallel, arr, window, min_periods, ddof, cap=8
+    )
 
 
 def _rolling_var_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
-    if arr.size >= THREADPOOL_THRESHOLD:
-        assert_memory_budget(
-            simple_result_memory_estimate(arr.shape[0], arr.shape[1]),
-            operation="rolling",
-        )
-        return _rolling_var_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return rolling_var_welford_serial(arr, window, min_periods, ddof)
-    return rolling_var_welford_parallel(arr, window, min_periods, ddof)
+    return _bounded_numba_rolling(
+        rolling_var_welford_parallel, arr, window, min_periods, ddof, cap=8
+    )
 
 
 def _rolling_min_dispatch(arr, window, min_periods):
@@ -1586,8 +1577,9 @@ def _rolling_min_dispatch(arr, window, min_periods):
         )
         return _rolling_min_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_min_2d_serial(arr, window, min_periods)
-    return _rolling_min_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_min_2d, arr, window, min_periods, cap=4)
 
 
 def _rolling_max_dispatch(arr, window, min_periods):
@@ -1599,29 +1591,33 @@ def _rolling_max_dispatch(arr, window, min_periods):
         )
         return _rolling_max_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_max_2d_serial(arr, window, min_periods)
-    return _rolling_max_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_max_2d, arr, window, min_periods, cap=4)
 
 
 def _rolling_skew_dispatch(arr, window, min_periods):
     """Dispatch to serial or parallel rolling skew based on array size."""
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_skew_2d_serial(arr, window, min_periods)
-    return _rolling_skew_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_skew_2d, arr, window, min_periods, cap=4)
 
 
 def _rolling_kurt_dispatch(arr, window, min_periods):
     """Dispatch to serial or parallel rolling kurt based on array size."""
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_kurt_2d_serial(arr, window, min_periods)
-    return _rolling_kurt_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_kurt_2d, arr, window, min_periods, cap=4)
 
 
 def _rolling_count_dispatch(arr, window, min_periods):
     """Dispatch to serial or parallel rolling count based on array size."""
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _rolling_count_2d_serial(arr, window, min_periods)
-    return _rolling_count_2d(arr, window, min_periods)
+    return _bounded_numba_rolling(_rolling_count_2d, arr, window, min_periods, cap=8)
 
 
 def _rolling_median_dispatch(arr, window, min_periods):

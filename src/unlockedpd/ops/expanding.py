@@ -10,12 +10,14 @@ true parallelism across columns.
 """
 
 import numpy as np
-from numba import njit, prange
+from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
+    record_dispatch_path,
+    resolve_threadpool_workers,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -26,6 +28,37 @@ PARALLEL_THRESHOLD = 500_000
 
 # Threshold for ThreadPool (larger arrays benefit more)
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements (~80MB)
+
+
+def _bounded_numba_expanding(kernel, arr, *args, cap=8):
+    """Run expanding prange kernels with a bounded Numba thread count."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        configured
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[1],
+            operation="expanding",
+            operation_cap=cap,
+            memory_bandwidth_cap=cap,
+            cap=cap,
+        )
+    )
+    current_threads = get_num_threads()
+    target_threads = max(1, min(int(target_threads), int(current_threads)))
+
+    record_dispatch_path("parallel_numba")
+    if target_threads == current_threads:
+        return kernel(arr, *args)
+
+    set_num_threads(target_threads)
+    try:
+        return kernel(arr, *args)
+    finally:
+        set_num_threads(current_threads)
 
 
 # ============================================================================
@@ -903,8 +936,9 @@ def _expanding_sum_dispatch(arr, min_periods):
         )
         return _expanding_sum_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_sum_2d_serial(arr, min_periods)
-    return _expanding_sum_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_sum_2d, arr, min_periods)
 
 
 def _expanding_mean_dispatch(arr, min_periods):
@@ -916,8 +950,9 @@ def _expanding_mean_dispatch(arr, min_periods):
         )
         return _expanding_mean_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_mean_2d_serial(arr, min_periods)
-    return _expanding_mean_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_mean_2d, arr, min_periods)
 
 
 def _expanding_std_dispatch(arr, min_periods, ddof=1):
@@ -929,8 +964,9 @@ def _expanding_std_dispatch(arr, min_periods, ddof=1):
         )
         return _expanding_std_threadpool(arr, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_std_2d_serial(arr, min_periods, ddof)
-    return _expanding_std_2d(arr, min_periods, ddof)
+    return _bounded_numba_expanding(_expanding_std_2d, arr, min_periods, ddof)
 
 
 def _expanding_var_dispatch(arr, min_periods, ddof=1):
@@ -942,8 +978,9 @@ def _expanding_var_dispatch(arr, min_periods, ddof=1):
         )
         return _expanding_var_threadpool(arr, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_var_2d_serial(arr, min_periods, ddof)
-    return _expanding_var_2d(arr, min_periods, ddof)
+    return _bounded_numba_expanding(_expanding_var_2d, arr, min_periods, ddof)
 
 
 def _expanding_min_dispatch(arr, min_periods):
@@ -955,8 +992,9 @@ def _expanding_min_dispatch(arr, min_periods):
         )
         return _expanding_min_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_min_2d_serial(arr, min_periods)
-    return _expanding_min_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_min_2d, arr, min_periods)
 
 
 def _expanding_max_dispatch(arr, min_periods):
@@ -968,29 +1006,33 @@ def _expanding_max_dispatch(arr, min_periods):
         )
         return _expanding_max_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_max_2d_serial(arr, min_periods)
-    return _expanding_max_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_max_2d, arr, min_periods)
 
 
 def _expanding_count_dispatch(arr, min_periods):
     """Dispatch to serial or parallel expanding count based on array size."""
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_count_2d_serial(arr, min_periods)
-    return _expanding_count_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_count_2d, arr, min_periods)
 
 
 def _expanding_skew_dispatch(arr, min_periods):
     """Dispatch to serial or parallel expanding skew based on array size."""
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_skew_2d_serial(arr, min_periods)
-    return _expanding_skew_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_skew_2d, arr, min_periods)
 
 
 def _expanding_kurt_dispatch(arr, min_periods):
     """Dispatch to serial or parallel expanding kurt based on array size."""
     if arr.size < PARALLEL_THRESHOLD:
+        record_dispatch_path("serial_numba")
         return _expanding_kurt_2d_serial(arr, min_periods)
-    return _expanding_kurt_2d(arr, min_periods)
+    return _bounded_numba_expanding(_expanding_kurt_2d, arr, min_periods)
 
 
 # ============================================================================

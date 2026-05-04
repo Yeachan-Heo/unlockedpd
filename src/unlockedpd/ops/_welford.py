@@ -2,12 +2,15 @@
 
 This provides O(n) complexity instead of O(n*w) for large windows.
 """
+
 import numpy as np
 from numba import njit, prange
 
 
 @njit(parallel=True, cache=True)
-def rolling_std_welford_parallel(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def rolling_std_welford_parallel(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Rolling std using Welford's online algorithm - O(n) per column.
 
     Welford's algorithm maintains running mean and M2 (sum of squared deviations)
@@ -21,51 +24,35 @@ def rolling_std_welford_parallel(arr: np.ndarray, window: int, min_periods: int,
         count = 0
         mean = 0.0
         M2 = 0.0  # Sum of squared deviations from mean
-        has_inf = False  # Track if window contains inf
 
         for row in range(n_rows):
             val = arr[row, col]
 
             # Add new value using Welford's update
-            # Exclude inf from statistics but track its presence
-            if not np.isnan(val):
-                if np.isinf(val):
-                    has_inf = True
-                    # Do NOT add inf to Welford statistics (it would corrupt mean/M2)
-                else:
-                    count += 1
-                    delta = val - mean
-                    mean += delta / count
-                    delta2 = val - mean
-                    M2 += delta * delta2
+            # Pandas rolling moments treat inf like missing data.
+            if np.isfinite(val):
+                count += 1
+                delta = val - mean
+                mean += delta / count
+                delta2 = val - mean
+                M2 += delta * delta2
 
             # Remove old value when past window (reverse Welford)
             if row >= window:
                 old_val = arr[row - window, col]
-                if not np.isnan(old_val):
-                    if np.isinf(old_val):
-                        has_inf = False  # May have removed the inf, need to recheck window
-                        # Check if window still has inf
-                        for k in range(row - window + 1, row + 1):
-                            if np.isinf(arr[k, col]):
-                                has_inf = True
-                                break
-                        # Do NOT remove inf from Welford statistics (it was never added)
+                if np.isfinite(old_val):
+                    count -= 1
+                    if count > 0:
+                        delta = old_val - mean
+                        mean -= delta / count
+                        delta2 = old_val - mean
+                        M2 -= delta * delta2
                     else:
-                        count -= 1
-                        if count > 0:
-                            delta = old_val - mean
-                            mean -= delta / count
-                            delta2 = old_val - mean
-                            M2 -= delta * delta2
-                        else:
-                            mean = 0.0
-                            M2 = 0.0
-                            has_inf = False
+                        mean = 0.0
+                        M2 = 0.0
 
-            # Compute result - if window has inf, std should be nan
             if count >= min_periods and count > ddof:
-                if has_inf or np.isinf(M2):
+                if np.isinf(M2):
                     result[row, col] = np.nan
                 else:
                     result[row, col] = np.sqrt(M2 / (count - ddof))
@@ -74,7 +61,9 @@ def rolling_std_welford_parallel(arr: np.ndarray, window: int, min_periods: int,
 
 
 @njit(cache=True)
-def rolling_std_welford_serial(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def rolling_std_welford_serial(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial version for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -84,48 +73,33 @@ def rolling_std_welford_serial(arr: np.ndarray, window: int, min_periods: int, d
         count = 0
         mean = 0.0
         M2 = 0.0
-        has_inf = False
 
         for row in range(n_rows):
             val = arr[row, col]
 
-            # Exclude inf from statistics but track its presence
-            if not np.isnan(val):
-                if np.isinf(val):
-                    has_inf = True
-                    # Do NOT add inf to Welford statistics (it would corrupt mean/M2)
-                else:
-                    count += 1
-                    delta = val - mean
-                    mean += delta / count
-                    delta2 = val - mean
-                    M2 += delta * delta2
+            # Pandas rolling moments treat inf like missing data.
+            if np.isfinite(val):
+                count += 1
+                delta = val - mean
+                mean += delta / count
+                delta2 = val - mean
+                M2 += delta * delta2
 
             if row >= window:
                 old_val = arr[row - window, col]
-                if not np.isnan(old_val):
-                    if np.isinf(old_val):
-                        has_inf = False
-                        # Check if window still has inf
-                        for k in range(row - window + 1, row + 1):
-                            if np.isinf(arr[k, col]):
-                                has_inf = True
-                                break
-                        # Do NOT remove inf from Welford statistics (it was never added)
+                if np.isfinite(old_val):
+                    count -= 1
+                    if count > 0:
+                        delta = old_val - mean
+                        mean -= delta / count
+                        delta2 = old_val - mean
+                        M2 -= delta * delta2
                     else:
-                        count -= 1
-                        if count > 0:
-                            delta = old_val - mean
-                            mean -= delta / count
-                            delta2 = old_val - mean
-                            M2 -= delta * delta2
-                        else:
-                            mean = 0.0
-                            M2 = 0.0
-                            has_inf = False
+                        mean = 0.0
+                        M2 = 0.0
 
             if count >= min_periods and count > ddof:
-                if has_inf or np.isinf(M2):
+                if np.isinf(M2):
                     result[row, col] = np.nan
                 else:
                     result[row, col] = np.sqrt(M2 / (count - ddof))
@@ -134,7 +108,9 @@ def rolling_std_welford_serial(arr: np.ndarray, window: int, min_periods: int, d
 
 
 @njit(parallel=True, cache=True)
-def rolling_var_welford_parallel(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def rolling_var_welford_parallel(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Rolling variance using Welford's algorithm."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -144,48 +120,33 @@ def rolling_var_welford_parallel(arr: np.ndarray, window: int, min_periods: int,
         count = 0
         mean = 0.0
         M2 = 0.0
-        has_inf = False
 
         for row in range(n_rows):
             val = arr[row, col]
 
-            # Exclude inf from statistics but track its presence
-            if not np.isnan(val):
-                if np.isinf(val):
-                    has_inf = True
-                    # Do NOT add inf to Welford statistics (it would corrupt mean/M2)
-                else:
-                    count += 1
-                    delta = val - mean
-                    mean += delta / count
-                    delta2 = val - mean
-                    M2 += delta * delta2
+            # Pandas rolling moments treat inf like missing data.
+            if np.isfinite(val):
+                count += 1
+                delta = val - mean
+                mean += delta / count
+                delta2 = val - mean
+                M2 += delta * delta2
 
             if row >= window:
                 old_val = arr[row - window, col]
-                if not np.isnan(old_val):
-                    if np.isinf(old_val):
-                        has_inf = False
-                        # Check if window still has inf
-                        for k in range(row - window + 1, row + 1):
-                            if np.isinf(arr[k, col]):
-                                has_inf = True
-                                break
-                        # Do NOT remove inf from Welford statistics (it was never added)
+                if np.isfinite(old_val):
+                    count -= 1
+                    if count > 0:
+                        delta = old_val - mean
+                        mean -= delta / count
+                        delta2 = old_val - mean
+                        M2 -= delta * delta2
                     else:
-                        count -= 1
-                        if count > 0:
-                            delta = old_val - mean
-                            mean -= delta / count
-                            delta2 = old_val - mean
-                            M2 -= delta * delta2
-                        else:
-                            mean = 0.0
-                            M2 = 0.0
-                            has_inf = False
+                        mean = 0.0
+                        M2 = 0.0
 
             if count >= min_periods and count > ddof:
-                if has_inf or np.isinf(M2):
+                if np.isinf(M2):
                     result[row, col] = np.nan
                 else:
                     result[row, col] = M2 / (count - ddof)
@@ -194,7 +155,9 @@ def rolling_var_welford_parallel(arr: np.ndarray, window: int, min_periods: int,
 
 
 @njit(cache=True)
-def rolling_var_welford_serial(arr: np.ndarray, window: int, min_periods: int, ddof: int = 1) -> np.ndarray:
+def rolling_var_welford_serial(
+    arr: np.ndarray, window: int, min_periods: int, ddof: int = 1
+) -> np.ndarray:
     """Serial version for small arrays."""
     n_rows, n_cols = arr.shape
     result = np.empty((n_rows, n_cols), dtype=np.float64)
@@ -204,48 +167,33 @@ def rolling_var_welford_serial(arr: np.ndarray, window: int, min_periods: int, d
         count = 0
         mean = 0.0
         M2 = 0.0
-        has_inf = False
 
         for row in range(n_rows):
             val = arr[row, col]
 
-            # Exclude inf from statistics but track its presence
-            if not np.isnan(val):
-                if np.isinf(val):
-                    has_inf = True
-                    # Do NOT add inf to Welford statistics (it would corrupt mean/M2)
-                else:
-                    count += 1
-                    delta = val - mean
-                    mean += delta / count
-                    delta2 = val - mean
-                    M2 += delta * delta2
+            # Pandas rolling moments treat inf like missing data.
+            if np.isfinite(val):
+                count += 1
+                delta = val - mean
+                mean += delta / count
+                delta2 = val - mean
+                M2 += delta * delta2
 
             if row >= window:
                 old_val = arr[row - window, col]
-                if not np.isnan(old_val):
-                    if np.isinf(old_val):
-                        has_inf = False
-                        # Check if window still has inf
-                        for k in range(row - window + 1, row + 1):
-                            if np.isinf(arr[k, col]):
-                                has_inf = True
-                                break
-                        # Do NOT remove inf from Welford statistics (it was never added)
+                if np.isfinite(old_val):
+                    count -= 1
+                    if count > 0:
+                        delta = old_val - mean
+                        mean -= delta / count
+                        delta2 = old_val - mean
+                        M2 -= delta * delta2
                     else:
-                        count -= 1
-                        if count > 0:
-                            delta = old_val - mean
-                            mean -= delta / count
-                            delta2 = old_val - mean
-                            M2 -= delta * delta2
-                        else:
-                            mean = 0.0
-                            M2 = 0.0
-                            has_inf = False
+                        mean = 0.0
+                        M2 = 0.0
 
             if count >= min_periods and count > ddof:
-                if has_inf or np.isinf(M2):
+                if np.isinf(M2):
                     result[row, col] = np.nan
                 else:
                     result[row, col] = M2 / (count - ddof)
