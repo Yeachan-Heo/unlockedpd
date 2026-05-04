@@ -149,4 +149,8 @@ unbounded BLAS/dot dispatch, direct native-C axis=0 reduction, NumExpr,
 Bottleneck, Rust/Rayon prototypes, native C cumulative kernels, and default
 native-C axis=1 transform dispatch.  OpenMP native transform kernels were faster
 in raw wall time but left extra worker threads alive after the call, so they are
-not accepted as resource-clean.
+not accepted as resource-clean.  A transient ThreadPool+Numba `nogil` axis=1
+transform experiment was also rejected after
+`.omx/artifacts/profile-transform-axis1-threadpool-numba-20260504T153536Z.json`:
+it restored `final_threads` to baseline, but regressed wall time to 0.15s for
+`diff` and 0.13s for `pct_change`.
