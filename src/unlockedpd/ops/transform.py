@@ -33,11 +33,11 @@ PARALLEL_THRESHOLD = 500_000
 # - 10000 rows with 64 CPUs = ~156 rows per CPU (good)
 MIN_ROWS_FOR_PARALLEL = 2000
 AXIS1_TRANSFORM_THREAD_CAP = 8
-AXIS1_NATIVE_BYTES_PER_THREAD = 4 * 1024 * 1024
+AXIS1_NATIVE_BYTES_PER_THREAD = 2 * 1024 * 1024
 AXIS1_NATIVE_DIFF_SMALL_CAP = 8
-AXIS1_NATIVE_DIFF_MEDIUM_CAP = 32
-AXIS1_NATIVE_DIFF_LARGE_CAP = 32
-AXIS1_NATIVE_PCT_SMALL_CAP = 32
+AXIS1_NATIVE_DIFF_MEDIUM_CAP = 48
+AXIS1_NATIVE_DIFF_LARGE_CAP = 48
+AXIS1_NATIVE_PCT_SMALL_CAP = 128
 AXIS1_NATIVE_PCT_MEDIUM_CAP = 16
 AXIS1_NATIVE_PCT_LARGE_CAP = 32
 AXIS1_NATIVE_SMALL_FRAME_BYTES = 64 * 1024 * 1024
@@ -168,9 +168,9 @@ def _axis1_native_operation_cap(arr: np.ndarray, op: str) -> int:
     until row chunks become too small or the memory subsystem saturates, so the
     cap scales with frame bytes but remains below the machine's logical CPU
     count.  The per-operation ceilings reflect measured saturation points on
-    the 384-logical-CPU benchmark host: large ``diff`` benefits from a wider
-    32-worker burst under machine load, while ``pct_change`` clears the large
-    target with a smaller but still doubled 16-worker cap at 256MB.
+    the 384-logical-CPU benchmark host: ``diff`` is best around a bounded
+    48-worker burst, while finite ``pct_change(periods=1)`` benefits from a
+    wider AVX-512/native burst without breaching the speed-weighted budget.
     """
 
     nbytes = int(getattr(arr, "nbytes", 0))

@@ -1,7 +1,7 @@
 # Resource profile results
 
-Latest broad run after the rank and axis=0 cumulative pass:
-`.omx/artifacts/broad-profile-pct32-20260504T184546Z.json`.
+Latest broad run after the native axis=1 transform tuning pass:
+`.omx/artifacts/broad-profile-clean-avx512-pct128-diff48-20260504T195138Z.json`.
 
 Latest targeted artifacts for the newest accepted changes:
 
@@ -11,6 +11,10 @@ Latest targeted artifacts for the newest accepted changes:
 .omx/artifacts/profile-cumulative-axis0-large-parfinite-20260504T181928Z.json
 .omx/artifacts/profile-transform-axis1-large-native-auto-rerun-factor1p2-20260504T174127Z.json
 .omx/artifacts/profile-transform-axis1-large-pct32-only-20260504T184412Z.json
+.omx/artifacts/profile-transform-axis1-large-avx512-huge-pct128-20260504T192704Z.json
+.omx/artifacts/profile-transform-axis1-large-diffcap48-20260504T193922Z.json
+.omx/artifacts/broad-profile-clean-avx512-pct128-diff48-20260504T195138Z.json
+.omx/artifacts/broad-profile-avx512-pct128-diff48-20260504T194344Z.json
 .omx/artifacts/broad-profile-pct32-20260504T184546Z.json
 .omx/artifacts/profile-transform-axis1-large-native-auto-caps-factor1p2-20260504T172202Z.json
 .omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json
@@ -34,7 +38,7 @@ PYTHONPATH=src poetry run python benchmarks/profile_resources.py --repeats 3 \
   --output .omx/artifacts/profile-cumulative-axis0-large-parfinite-20260504T181928Z.json
 
 PYTHONPATH=src poetry run python benchmarks/profile_resources.py --repeats 3 \
-  --output .omx/artifacts/broad-profile-pct32-20260504T184546Z.json
+  --output .omx/artifacts/broad-profile-clean-avx512-pct128-diff48-20260504T195138Z.json
 ```
 
 The current HPC resource budget follows the revised constraint: higher
@@ -64,6 +68,11 @@ still reported separately.
   stable Numba/pandas paths unless `UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS=1`
   explicitly opts in.  `UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS=1` remains a hard
   escape hatch.
+- The native axis=1 transform path now checks pthread creation, uses smaller
+  explicit worker stacks, applies best-effort huge-page advice for large
+  input/output spans, and uses an AVX-512 reciprocal/Newton fast lane for finite
+  `pct_change(periods=1)` values with scalar fallback for zeros, NaNs, and
+  infinities.
 - Dense finite `axis=1` cumulative `cumsum/cumprod/cummin/cummax` use transient
   bounded ThreadPool + Numba `nogil` row chunks; workers join before return.
 - Pairwise rolling `corr/cov` uses a single bounded Numba `prange` kernel over
@@ -88,15 +97,15 @@ still reported separately.
 | cumulative-axis0-large-256mb | dataframe_cumprod | 26.544x | 1.169x | 1.000x | pass | parallel_numba |
 | cumulative-axis0-large-256mb | dataframe_cummin | 26.384x | 1.189x | 1.000x | pass | parallel_numba |
 | cumulative-axis0-large-256mb | dataframe_cummax | 27.034x | 1.145x | 1.000x | pass | parallel_numba |
-| transform-axis1-large-256mb | dataframe_diff | 6.784x | 2.390x | 1.000x | pass | native_c |
-| transform-axis1-large-256mb | dataframe_pct_change | 12.805x | 1.323x | 0.997x | pass | native_c |
+| transform-axis1-large-256mb | dataframe_diff | 7.917x | 2.661x | 1.000x | pass | native_c |
+| transform-axis1-large-256mb | dataframe_pct_change | 12.126x | 1.692x | 0.997x | pass | native_c |
 | pairwise-safe-rolling-corr | rolling_corr | 21.392x | 0.332x | 0.882x | pass | parallel_numba |
 | pairwise-safe-rolling-corr | rolling_cov | 17.596x | 0.380x | 0.921x | pass | parallel_numba |
 
 ## Latest broad profile summary
 
 The latest broad run used the default `speedup * 1.2` resource gate and covered
-44 cases on the clean code tree for this pass.  `37 / 44` cases met both the 10x target
+44 cases on the clean code tree for this pass.  `36 / 44` cases met both the 10x target
 and the speed-weighted CPU/RAM budget.  The rank and axis=0 cumulative changes
 are successful in the broad matrix; the remaining large-frame blockers are
 `axis=1 diff` at 256MiB.
@@ -105,13 +114,14 @@ Rows still below 10x in the latest broad run:
 
 | case | operation | speedup | CPU ratio | RSS ratio | budget | path |
 | --- | --- | ---: | ---: | ---: | --- | --- |
-| import-only | import_unlockedpd | 0.966x | 1.034x | 1.000x | pass | optimized_import |
-| rank-wide-1mb-control | rank_axis1 | 0.992x | 1.004x | 0.998x | pass | pandas_native |
-| transform-axis1-wide-32mb | dataframe_diff | 1.815x | 4.322x | 1.004x | FAIL | parallel_numba |
-| transform-axis1-wide-32mb | dataframe_pct_change | 3.335x | 2.475x | 0.502x | pass | parallel_numba |
-| aggregation-wide-10mb | dataframe_mean | 4.362x | 5.300x | 0.795x | FAIL | numpy_vectorized |
-| aggregation-wide-10mb | dataframe_sum | 5.053x | 0.202x | 0.790x | pass | numpy_vectorized |
-| transform-axis1-large-256mb | dataframe_diff | 7.121x | 2.266x | 1.000x | pass | native_c |
+| import-only | import_unlockedpd | 0.986x | 1.020x | 1.000x | pass | optimized_import |
+| rank-wide-1mb-control | rank_axis1 | 0.991x | 1.006x | 0.999x | pass | pandas_native |
+| aggregation-wide-10mb | dataframe_mean | 6.907x | 0.148x | 0.797x | pass | numpy_vectorized |
+| aggregation-wide-10mb | dataframe_sum | 6.250x | 2.779x | 0.791x | pass | numpy_vectorized |
+| aggregation-axis1-wide-32mb | dataframe_sum | 9.779x | 2.599x | 0.254x | pass | parallel_numba |
+| transform-axis1-wide-32mb | dataframe_diff | 1.853x | 4.379x | 1.004x | FAIL | parallel_numba |
+| transform-axis1-wide-32mb | dataframe_pct_change | 3.297x | 2.280x | 0.502x | pass | parallel_numba |
+| transform-axis1-large-256mb | dataframe_diff | 7.917x | 2.661x | 1.000x | pass | native_c |
 
 ## Remaining gap to the universal 10x objective
 
@@ -121,10 +131,12 @@ axis=1 `pct_change`, rolling, pairwise, and rank have >10x evidence.  Missing or
 weak requirements:
 
 - 256MB `axis=1 diff`: native-C auto-dispatch is resource-bounded but still only
-  about 7x against the fastest pandas baseline observed in the broad profiler.
+  about 8x against the fastest pandas baseline observed in the broad profiler.
 - 32MB `axis=1 diff/pct_change`: optimized wall time is already ~3-4ms, but
   pandas can measure ~7-15ms in the broad profiler, making universal 10x
   unstable for this medium-wide case.
+- 32MB `axis=1 sum`: the clean broad run measured 9.779x, just below the 10x
+  line, although it remains within the speed-weighted CPU/RAM budget.
 - 10MB `axis=0` `sum/mean`: optimized wall time is sub-millisecond but still only
   around 5-6x against pandas; this is below the large-frame focus but remains in
   the broad matrix.

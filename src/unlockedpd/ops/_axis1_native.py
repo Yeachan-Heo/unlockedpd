@@ -25,6 +25,15 @@ _SOURCE = r"""
 #include <math.h>
 #include <pthread.h>
 #include <stddef.h>
+#if defined(__linux__)
+#include <stdint.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+#if defined(__AVX512F__)
+#include <float.h>
+#include <immintrin.h>
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define UPD_IVDEP _Pragma("GCC ivdep")
@@ -42,6 +51,117 @@ typedef struct {
     long periods;
     int op;
 } task_t;
+
+typedef struct {
+    const double* in;
+    double* out;
+    size_t rows;
+    size_t cols;
+    size_t start;
+    size_t end;
+} flat_task_t;
+
+static void advise_huge_pages(const void* ptr, size_t bytes) {
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    if (ptr == NULL || bytes == 0) return;
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return;
+    uintptr_t address = (uintptr_t)ptr;
+    uintptr_t page_mask = (uintptr_t)page_size - 1;
+    uintptr_t start = address & ~page_mask;
+    uintptr_t end = (address + bytes + page_mask) & ~page_mask;
+    if (end > start) {
+        (void)madvise((void*)start, (size_t)(end - start), MADV_HUGEPAGE);
+    }
+#else
+    (void)ptr;
+    (void)bytes;
+#endif
+}
+
+static void* axis1_worker_p1_flat(void* arg) {
+    flat_task_t* task = (flat_task_t*)arg;
+    const double* restrict in = task->in;
+    double* restrict out = task->out;
+    size_t rows = task->rows;
+    size_t cols = task->cols;
+    size_t start = task->start;
+    size_t end = task->end;
+
+    /*
+     * pct_change(periods=1) is the large-frame division hot path.  Treat the
+     * frame as one flat contiguous vector, compute the row-boundary cells too,
+     * then overwrite exactly those first-column cells with NaN.  This preserves
+     * pandas semantics while giving the compiler one long vectorizable loop
+     * instead of restarting a 511-element inner loop for every row.
+     */
+    size_t compute_start = start == 0 ? 1 : start;
+#if defined(__AVX512F__)
+    size_t idx = compute_start;
+    const __m512d one = _mm512_set1_pd(1.0);
+    const __m512d two = _mm512_set1_pd(2.0);
+    const __m512d zero = _mm512_setzero_pd();
+    const __m512d max_value = _mm512_set1_pd(DBL_MAX);
+    const __m512d min_value = _mm512_set1_pd(-DBL_MAX);
+
+    for (; idx + 8 <= end; idx += 8) {
+        __m512d numerator = _mm512_loadu_pd(in + idx);
+        __m512d denominator = _mm512_loadu_pd(in + idx - 1);
+        __mmask8 finite_denominator =
+            _mm512_cmp_pd_mask(denominator, max_value, _CMP_LE_OQ) &
+            _mm512_cmp_pd_mask(denominator, min_value, _CMP_GE_OQ);
+        __mmask8 finite_numerator =
+            _mm512_cmp_pd_mask(numerator, max_value, _CMP_LE_OQ) &
+            _mm512_cmp_pd_mask(numerator, min_value, _CMP_GE_OQ);
+        __mmask8 nonzero_denominator =
+            _mm512_cmp_pd_mask(denominator, zero, _CMP_NEQ_OQ);
+        __mmask8 fast_mask =
+            finite_denominator & finite_numerator & nonzero_denominator;
+
+        if (fast_mask) {
+            __m512d reciprocal = _mm512_rcp14_pd(denominator);
+            reciprocal = _mm512_mul_pd(
+                reciprocal,
+                _mm512_sub_pd(two, _mm512_mul_pd(denominator, reciprocal))
+            );
+            reciprocal = _mm512_mul_pd(
+                reciprocal,
+                _mm512_sub_pd(two, _mm512_mul_pd(denominator, reciprocal))
+            );
+            __m512d value = _mm512_sub_pd(
+                _mm512_mul_pd(numerator, reciprocal),
+                one
+            );
+            _mm512_mask_storeu_pd(out + idx, fast_mask, value);
+        }
+        if (fast_mask != 0xFF) {
+            for (size_t lane = 0; lane < 8; ++lane) {
+                if ((fast_mask & (1 << lane)) == 0) {
+                    size_t scalar_idx = idx + lane;
+                    out[scalar_idx] =
+                        in[scalar_idx] / in[scalar_idx - 1] - 1.0;
+                }
+            }
+        }
+    }
+    for (; idx < end; ++idx) {
+        out[idx] = in[idx] / in[idx - 1] - 1.0;
+    }
+#else
+    UPD_IVDEP
+    for (size_t idx = compute_start; idx < end; ++idx) {
+        out[idx] = in[idx] / in[idx - 1] - 1.0;
+    }
+#endif
+
+    size_t first_row = (start + cols - 1) / cols;
+    for (size_t row = first_row; row < rows; ++row) {
+        size_t idx = row * cols;
+        if (idx >= end) break;
+        out[idx] = NAN;
+    }
+    return NULL;
+}
 
 static void* axis1_worker(void* arg) {
     task_t* task = (task_t*)arg;
@@ -115,6 +235,54 @@ static void* axis1_worker(void* arg) {
     return NULL;
 }
 
+static void run_axis1_transform_p1_flat(
+    const double* restrict in,
+    double* restrict out,
+    size_t rows,
+    size_t cols,
+    int threads
+) {
+    if (threads < 1) threads = 1;
+    if ((size_t)threads > rows) threads = (int)rows;
+    if (threads < 1) threads = 1;
+
+    pthread_t tids[threads];
+    flat_task_t tasks[threads];
+    pthread_attr_t attr;
+    pthread_attr_t* attr_ptr = NULL;
+    int attr_initialized = 0;
+    if (pthread_attr_init(&attr) == 0) {
+        attr_initialized = 1;
+        if (pthread_attr_setstacksize(&attr, 256 * 1024) == 0) {
+            attr_ptr = &attr;
+        }
+    }
+
+    size_t total = rows * cols;
+    size_t step = (total + (size_t)threads - 1) / (size_t)threads;
+    int actual_threads = 0;
+
+    for (int i = 0; i < threads; ++i) {
+        size_t start = (size_t)i * step;
+        if (start >= total) break;
+        size_t end = start + step;
+        if (end > total) end = total;
+        tasks[i] = (flat_task_t){in, out, rows, cols, start, end};
+        if (pthread_create(&tids[actual_threads], attr_ptr, axis1_worker_p1_flat, &tasks[i]) == 0) {
+            actual_threads++;
+        } else {
+            axis1_worker_p1_flat(&tasks[i]);
+        }
+    }
+
+    for (int i = 0; i < actual_threads; ++i) {
+        pthread_join(tids[i], NULL);
+    }
+    if (attr_initialized) {
+        pthread_attr_destroy(&attr);
+    }
+}
+
 static void run_axis1_transform(
     const double* restrict in,
     double* restrict out,
@@ -128,8 +296,31 @@ static void run_axis1_transform(
     if ((size_t)threads > rows) threads = (int)rows;
     if (threads < 1) threads = 1;
 
+    size_t total_bytes = rows * cols * sizeof(double);
+    advise_huge_pages(in, total_bytes);
+    advise_huge_pages(out, total_bytes);
+
+    if (periods == 1 && cols > 1 && op == 1) {
+        run_axis1_transform_p1_flat(in, out, rows, cols, threads);
+        return;
+    }
+
     pthread_t tids[threads];
     task_t tasks[threads];
+    pthread_attr_t attr;
+    pthread_attr_t* attr_ptr = NULL;
+    int attr_initialized = 0;
+    if (pthread_attr_init(&attr) == 0) {
+        attr_initialized = 1;
+        /*
+         * These workers keep only a tiny task pointer on their C stack.  The
+         * libc default stack is commonly several MiB per pthread, which is
+         * unnecessary virtual-memory pressure for short native bursts.
+         */
+        if (pthread_attr_setstacksize(&attr, 256 * 1024) == 0) {
+            attr_ptr = &attr;
+        }
+    }
     size_t step = (rows + (size_t)threads - 1) / (size_t)threads;
     int actual_threads = 0;
 
@@ -139,12 +330,18 @@ static void run_axis1_transform(
         size_t end = start + step;
         if (end > rows) end = rows;
         tasks[i] = (task_t){in, out, rows, cols, start, end, periods, op};
-        pthread_create(&tids[i], NULL, axis1_worker, &tasks[i]);
-        actual_threads++;
+        if (pthread_create(&tids[actual_threads], attr_ptr, axis1_worker, &tasks[i]) == 0) {
+            actual_threads++;
+        } else {
+            axis1_worker(&tasks[i]);
+        }
     }
 
     for (int i = 0; i < actual_threads; ++i) {
         pthread_join(tids[i], NULL);
+    }
+    if (attr_initialized) {
+        pthread_attr_destroy(&attr);
     }
 }
 

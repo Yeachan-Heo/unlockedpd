@@ -3,11 +3,13 @@
 import numpy as np
 import pandas as pd
 import pandas.testing as tm
+import pytest
 
 import unlockedpd
 from unlockedpd._resources import get_last_selected_path
 from unlockedpd.ops import cumulative as cumulative_ops
 from unlockedpd.ops import transform as transform_ops
+from unlockedpd.ops._axis1_native import native_axis1_transform
 
 
 def _wide_frame(rows=512, cols=512):
@@ -232,6 +234,35 @@ def test_axis1_large_diff_pct_auto_native_path_matches_pandas(monkeypatch):
 
         tm.assert_frame_equal(result, expected)
         assert get_last_selected_path() == "native_c"
+
+
+def test_axis1_native_periods_one_kernel_matches_pandas_edge_values():
+    arr = np.array(
+        [
+            [1.0, 2.0, 0.0, np.nan, 5.0],
+            [np.inf, np.inf, 1.0, 0.0, 2.0],
+            [3.0, 4.0, 5.0, 6.0, 7.0],
+            [1e-300, 2e-300, -3e-300, 4e-300, 5e-300],
+        ],
+        dtype=np.float64,
+    )
+
+    compiled = native_axis1_transform(arr, 1, op="diff", threads=2)
+    if compiled is None:
+        pytest.skip("optional native axis=1 transform library is unavailable")
+
+    expected_diff = pd.DataFrame(arr).diff(axis=1).to_numpy()
+    np.testing.assert_allclose(compiled, expected_diff, equal_nan=True)
+
+    result_pct = native_axis1_transform(arr, 1, op="pct", threads=2)
+    expected_pct = pd.DataFrame(arr).pct_change(axis=1, fill_method=None).to_numpy()
+    np.testing.assert_allclose(
+        result_pct,
+        expected_pct,
+        equal_nan=True,
+        rtol=1e-10,
+        atol=0.0,
+    )
 
 
 def test_axis1_native_thread_cap_scales_with_frame_size(monkeypatch):
