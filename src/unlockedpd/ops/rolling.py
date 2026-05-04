@@ -15,7 +15,6 @@ import pandas as pd
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
 from .._resources import (
     assert_memory_budget,
-    record_dispatch_path,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -1451,6 +1450,7 @@ def _rolling_sem_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
 def _rolling_sum_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_sum_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_sum_2d_serial(arr, window, min_periods)
@@ -1460,6 +1460,7 @@ def _rolling_sum_dispatch(arr, window, min_periods):
 def _rolling_mean_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_mean_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_mean_2d_serial(arr, window, min_periods)
@@ -1469,6 +1470,7 @@ def _rolling_mean_dispatch(arr, window, min_periods):
 def _rolling_std_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_std_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return rolling_std_welford_serial(arr, window, min_periods, ddof)
@@ -1478,6 +1480,7 @@ def _rolling_std_dispatch(arr, window, min_periods, ddof=1):
 def _rolling_var_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_var_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return rolling_var_welford_serial(arr, window, min_periods, ddof)
@@ -1487,6 +1490,7 @@ def _rolling_var_dispatch(arr, window, min_periods, ddof=1):
 def _rolling_min_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_min_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_min_2d_serial(arr, window, min_periods)
@@ -1496,6 +1500,7 @@ def _rolling_min_dispatch(arr, window, min_periods):
 def _rolling_max_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_max_threadpool(arr, window, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_max_2d_serial(arr, window, min_periods)
@@ -1526,6 +1531,7 @@ def _rolling_count_dispatch(arr, window, min_periods):
 def _rolling_median_dispatch(arr, window, min_periods):
     """Dispatch to ThreadPool for large arrays."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_median_threadpool(arr, window, min_periods)
     # For smaller arrays, use serial version
     return _rolling_median_threadpool(arr, window, min_periods)  # Always use optimized
@@ -1534,6 +1540,7 @@ def _rolling_median_dispatch(arr, window, min_periods):
 def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
     """Dispatch to ThreadPool for large arrays."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
     return _rolling_quantile_threadpool(arr, window, min_periods, quantile)
 
@@ -1541,6 +1548,7 @@ def _rolling_quantile_dispatch(arr, window, min_periods, quantile):
 def _rolling_sem_dispatch(arr, window, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="rolling")
         return _rolling_sem_threadpool(arr, window, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return _rolling_sem_2d_serial(arr, window, min_periods, ddof)

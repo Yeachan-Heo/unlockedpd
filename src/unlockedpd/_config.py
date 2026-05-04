@@ -16,18 +16,23 @@ import math
 import os
 import threading
 from dataclasses import dataclass, field
+from typing import Optional, Union
 
 import numba
 
 
-def _parse_auto_int(value: object, default: int = 0) -> int:
-    """Parse an integer where unset, 0, and 'auto' mean adaptive/default."""
+def _parse_bool(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
-    if isinstance(value, str):
-        value = value.strip().lower()
-        if value in {"", "0", "auto", "default"}:
-            return 0
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int(value: Optional[str], default: int = 0) -> int:
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if value in {"", "auto", "none"}:
+        return default
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -35,9 +40,7 @@ def _parse_auto_int(value: object, default: int = 0) -> int:
     return parsed if parsed > 0 else 0
 
 
-def _parse_positive_float_env(name: str, default: float) -> float:
-    """Parse a positive finite float env var, falling back on invalid values."""
-    value = os.environ.get(name)
+def _parse_float(value: Optional[str], default: float) -> float:
     if value is None:
         return default
     try:
@@ -47,12 +50,22 @@ def _parse_positive_float_env(name: str, default: float) -> float:
     return parsed if math.isfinite(parsed) and parsed > 0 else default
 
 
-def _coerce_positive_float(value: object, name: str) -> float:
-    """Coerce a runtime config value to a positive finite float."""
-    parsed = float(value)
-    if not math.isfinite(parsed) or parsed <= 0:
-        raise ValueError(f"{name} must be a positive finite number")
-    return parsed
+def _parse_warmup(value: Optional[str]) -> str:
+    warmup = (value or "lazy").strip().lower()
+    aliases = {
+        "0": "none",
+        "false": "none",
+        "off": "none",
+        "disabled": "none",
+        "disable": "none",
+        "1": "eager",
+        "true": "eager",
+        "on": "eager",
+        "full": "eager",
+        "auto": "lazy",
+    }
+    warmup = aliases.get(warmup, warmup)
+    return warmup if warmup in {"none", "lazy", "eager"} else "lazy"
 
 
 @dataclass
@@ -140,7 +153,7 @@ class UnlockedConfig:
             return self._threadpool_workers
 
     @threadpool_workers.setter
-    def threadpool_workers(self, value: int) -> None:
+    def threadpool_workers(self, value: Union[int, str, None]) -> None:
         with self._lock:
             self._threadpool_workers = _parse_auto_int(value, 0)
 

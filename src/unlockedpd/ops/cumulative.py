@@ -13,8 +13,6 @@ from numba import njit
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
 from .._resources import (
     assert_memory_budget,
-    pairwise_rolling_memory_estimate,
-    record_dispatch_path,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -230,6 +228,7 @@ def optimized_cumsum(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
         result = _cumsum_parallel(arr, skipna)
     else:
         # Fall back to pandas for small DataFrames
@@ -260,6 +259,7 @@ def optimized_cumprod(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
         result = _cumprod_parallel(arr, skipna)
     else:
         raise TypeError("Use pandas for small DataFrames")
@@ -289,6 +289,7 @@ def optimized_cummin(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
         result = _cummin_parallel(arr, skipna)
     else:
         raise TypeError("Use pandas for small DataFrames")
@@ -318,6 +319,7 @@ def optimized_cummax(df, axis=0, skipna=True, *args, **kwargs):
     arr = ensure_float64(numeric_df.values)
 
     if _should_use_parallel(arr):
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="cumulative")
         result = _cummax_parallel(arr, skipna)
     else:
         raise TypeError("Use pandas for small DataFrames")

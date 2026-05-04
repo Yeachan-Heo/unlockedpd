@@ -14,7 +14,6 @@ from numba import njit, prange
 from .._compat import get_numeric_columns_fast, ensure_float64
 from .._resources import (
     assert_memory_budget,
-    record_dispatch_path,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -127,6 +126,7 @@ def _sum_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _sum_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _sum_parallel(arr, skipna)
@@ -232,6 +232,7 @@ def _mean_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _mean_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _mean_parallel(arr, skipna)
@@ -370,6 +371,7 @@ def _var_dispatch(arr, skipna, axis, ddof):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _var_threadpool(arr, skipna, ddof)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _var_parallel(arr, skipna, ddof)
@@ -477,6 +479,7 @@ def _std_dispatch(arr, skipna, axis, ddof):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _std_threadpool(arr, skipna, ddof)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _std_parallel(arr, skipna, ddof)
@@ -606,6 +609,7 @@ def _min_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _min_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _min_parallel(arr, skipna)
@@ -735,6 +739,7 @@ def _max_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _max_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _max_parallel(arr, skipna)
@@ -881,6 +886,7 @@ def _median_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _median_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _median_parallel(arr, skipna)
@@ -1001,6 +1007,7 @@ def _prod_dispatch(arr, skipna, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _prod_threadpool(arr, skipna)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _prod_parallel(arr, skipna)
@@ -1106,6 +1113,7 @@ def _quantile_dispatch(arr, q, axis):
 
     n_elements = arr.size
     if n_elements >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1], intermediates=0), operation="aggregation")
         result = _quantile_threadpool(arr, q)
     elif n_elements >= PARALLEL_THRESHOLD:
         result = _quantile_parallel(arr, q)

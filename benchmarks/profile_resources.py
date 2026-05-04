@@ -22,7 +22,7 @@ import time
 import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = "resource-profile-v1"
 DEFAULT_CASES = (
@@ -40,11 +40,11 @@ DEFAULT_CASES = (
 class CaseSpec:
     case_id: str
     operation: str
-    shape: tuple[int, int] | None
-    params: dict[str, Any]
+    shape: Optional[Tuple[int, int]]
+    params: Dict[str, Any]
     parallelism_gate: bool = False
 
-    def worker_payload(self) -> dict[str, Any]:
+    def worker_payload(self) -> Dict[str, Any]:
         return {
             "case_id": self.case_id,
             "operation": self.operation,
@@ -54,7 +54,7 @@ class CaseSpec:
         }
 
 
-def _case_matrix() -> list[CaseSpec]:
+def _case_matrix() -> List[CaseSpec]:
     return [
         CaseSpec("import-only", "import_unlockedpd", None, {}, False),
         CaseSpec("rolling-wide-10mb", "rolling_mean", (1280, 1024), {"window": 20}, True),
@@ -70,7 +70,7 @@ def _case_matrix() -> list[CaseSpec]:
     ]
 
 
-def _matches_case(spec: CaseSpec, patterns: list[str]) -> bool:
+def _matches_case(spec: CaseSpec, patterns: List[str]) -> bool:
     if not patterns:
         return True
     names = {spec.case_id, spec.operation, f"{spec.case_id}:{spec.operation}"}
@@ -140,7 +140,7 @@ class _ThreadSampler:
             time.sleep(self.interval)
 
 
-def _resource_config_snapshot() -> dict[str, Any]:
+def _resource_config_snapshot() -> Dict[str, Any]:
     try:
         import unlockedpd
         cfg = unlockedpd.config
@@ -170,8 +170,8 @@ def _memory_total_bytes() -> int:
     return 0
 
 
-def _git_snapshot() -> dict[str, Any]:
-    def run(cmd: list[str]) -> str:
+def _git_snapshot() -> Dict[str, Any]:
+    def run(cmd: List[str]) -> str:
         try:
             return subprocess.check_output(cmd, cwd=_repo_root(), text=True, stderr=subprocess.DEVNULL).strip()
         except Exception:
@@ -183,8 +183,8 @@ def _git_snapshot() -> dict[str, Any]:
     }
 
 
-def _library_versions() -> dict[str, str | None]:
-    versions: dict[str, str | None] = {}
+def _library_versions() -> dict[str, Optional[str]]:
+    versions: dict[str, Optional[str]] = {}
     for name in ("pandas", "numpy", "numba", "unlockedpd"):
         try:
             module = __import__(name)
@@ -203,7 +203,7 @@ def _dataframe(shape: tuple[int, int], seed: int):
     return pd.DataFrame(arr, columns=[f"c{i}" for i in range(shape[1])])
 
 
-def _run_operation(spec: dict[str, Any], seed: int, implementation: str) -> tuple[Any, str]:
+def _run_operation(spec: Dict[str, Any], seed: int, implementation: str) -> Tuple[Any, str]:
     operation = spec["operation"]
     shape = tuple(spec["shape"]) if spec.get("shape") else None
     params = spec.get("params") or {}
@@ -262,7 +262,7 @@ def _run_operation(spec: dict[str, Any], seed: int, implementation: str) -> tupl
     return checksum, selected_path
 
 
-def _checksum(result: Any) -> dict[str, Any]:
+def _checksum(result: Any) -> Dict[str, Any]:
     import numpy as np
     import pandas as pd
 
@@ -350,7 +350,7 @@ def _worker_main(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_worker(spec: CaseSpec, seed: int, repeat: int, mode: str, implementation: str) -> dict[str, Any]:
+def _run_worker(spec: CaseSpec, seed: int, repeat: int, mode: str, implementation: str) -> Dict[str, Any]:
     env = _module_path_env()
     cmd = [
         sys.executable,
@@ -398,17 +398,17 @@ def _run_worker(spec: CaseSpec, seed: int, repeat: int, mode: str, implementatio
         }
 
 
-def _safe_ratio(numerator: float, denominator: float) -> float | None:
+def _safe_ratio(numerator: float, denominator: float) -> Optional[float]:
     if denominator <= 0:
         return None
     return numerator / denominator
 
 
-def _summarize(records: list[dict[str, Any]], parallelism_gate: bool, max_memory: float, max_cpu: float) -> dict[str, Any]:
+def _summarize(records: list[Dict[str, Any]], parallelism_gate: bool, max_memory: float, max_cpu: float) -> Dict[str, Any]:
     pandas = [r for r in records if r.get("implementation") == "pandas" and not r.get("error")]
     opt = [r for r in records if r.get("implementation") == "optimized" and not r.get("error")]
 
-    def mean(items: list[float]) -> float | None:
+    def mean(items: List[float]) -> Optional[float]:
         return sum(items) / len(items) if items else None
 
     pandas_wall = mean([float(r["wall_seconds"]) for r in pandas])
@@ -436,7 +436,7 @@ def _summarize(records: list[dict[str, Any]], parallelism_gate: bool, max_memory
     }
 
 
-def _load_comparisons(patterns: list[str]) -> list[dict[str, Any]]:
+def _load_comparisons(patterns: List[str]) -> list[Dict[str, Any]]:
     loaded = []
     for pattern in patterns:
         for path in sorted(glob.glob(pattern)):
@@ -466,7 +466,7 @@ def _driver_main(args: argparse.Namespace) -> int:
 
     for spec in selected_specs:
         for mode in modes:
-            repeats: list[dict[str, Any]] = []
+            repeats: list[Dict[str, Any]] = []
             for repeat in range(args.repeats):
                 for implementation in ("pandas", "optimized"):
                     record = _run_worker(spec, args.seed, repeat, mode, implementation)
@@ -505,7 +505,7 @@ def _driver_main(args: argparse.Namespace) -> int:
     return 0
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile unlockedpd resource overhead vs pandas")
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--repeats", type=int, default=5)
@@ -521,7 +521,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     if args.worker_case:
         return _worker_main(args)

@@ -16,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
 from .._resources import (
     assert_memory_budget,
-    record_dispatch_path,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -871,6 +870,7 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
 def _expanding_sum_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
         return _expanding_sum_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_sum_2d_serial(arr, min_periods)
@@ -880,6 +880,7 @@ def _expanding_sum_dispatch(arr, min_periods):
 def _expanding_mean_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
         return _expanding_mean_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_mean_2d_serial(arr, min_periods)
@@ -889,6 +890,7 @@ def _expanding_mean_dispatch(arr, min_periods):
 def _expanding_std_dispatch(arr, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
         return _expanding_std_threadpool(arr, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_std_2d_serial(arr, min_periods, ddof)
@@ -898,6 +900,7 @@ def _expanding_std_dispatch(arr, min_periods, ddof=1):
 def _expanding_var_dispatch(arr, min_periods, ddof=1):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
         return _expanding_var_threadpool(arr, min_periods, ddof)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_var_2d_serial(arr, min_periods, ddof)
@@ -907,6 +910,7 @@ def _expanding_var_dispatch(arr, min_periods, ddof=1):
 def _expanding_min_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
         return _expanding_min_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_min_2d_serial(arr, min_periods)
@@ -916,6 +920,7 @@ def _expanding_min_dispatch(arr, min_periods):
 def _expanding_max_dispatch(arr, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="expanding")
         return _expanding_max_threadpool(arr, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _expanding_max_2d_serial(arr, min_periods)

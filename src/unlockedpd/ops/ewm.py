@@ -10,7 +10,6 @@ import pandas as pd
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
 from .._resources import (
     assert_memory_budget,
-    record_dispatch_path,
     simple_result_memory_estimate,
     use_threadpool_path,
 )
@@ -685,6 +684,7 @@ def _ewm_std_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
 def _ewm_mean_dispatch(arr, alpha, adjust, ignore_na, min_periods):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm")
         return _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods)
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_mean_2d_serial(arr, alpha, adjust, ignore_na, min_periods)
@@ -694,6 +694,7 @@ def _ewm_mean_dispatch(arr, alpha, adjust, ignore_na, min_periods):
 def _ewm_var_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm")
         return _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_var_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)
@@ -703,6 +704,7 @@ def _ewm_var_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
 def _ewm_std_dispatch(arr, alpha, adjust, ignore_na, min_periods, bias):
     """Dispatch to ThreadPool (large), parallel (medium), or serial (small)."""
     if arr.size >= THREADPOOL_THRESHOLD:
+        assert_memory_budget(simple_result_memory_estimate(arr.shape[0], arr.shape[1]), operation="ewm")
         return _ewm_std_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias)
     if arr.size < PARALLEL_THRESHOLD:
         return _ewm_std_2d_serial(arr, alpha, adjust, ignore_na, min_periods, bias)

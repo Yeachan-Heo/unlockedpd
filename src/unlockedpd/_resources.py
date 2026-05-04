@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -27,17 +27,32 @@ def _positive_int_or_none(value: Optional[int]) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
-def logical_cpu_count() -> int:
-    """Return a safe logical CPU count for resource decisions."""
-    return max(1, os.cpu_count() or 1)
+def cpu_count() -> int:
+    """Return logical CPU count with a conservative fallback."""
+    return os.cpu_count() or 8
+
+
+def get_last_selected_path() -> Optional[str]:
+    """Return the last optimized-path label recorded in this thread."""
+    return getattr(_last_selected_path, "value", None)
+
+
+def set_last_selected_path(path: str) -> None:
+    """Record an optimized-path label for profilers and diagnostics."""
+    _last_selected_path.value = path
+
+
+def _operation_cap(operation: Optional[str]) -> int:
+    if operation and "pairwise" in operation:
+        return _PAIRWISE_MEMORY_BANDWIDTH_CAP
+    return _AUTO_MEMORY_BANDWIDTH_CAP
 
 
 def resolve_threadpool_workers(
     *,
-    work_units: Optional[int] = None,
-    configured_workers: Optional[int] = None,
-    operation_cap: Optional[int] = None,
-    memory_bandwidth_cap: int = DEFAULT_MEMORY_BANDWIDTH_WORKER_CAP,
+    operation: Optional[str] = None,
+    cap: Optional[int] = None,
+    min_workers: int = 1,
 ) -> int:
     """Resolve a bounded ThreadPool worker count.
 
@@ -96,17 +111,15 @@ def estimate_array_nbytes(
     return max(0, int(elements) * bytes_per_element)
 
 
-def estimate_operation_nbytes(
-    shape_or_array: Union[ShapeLike, np.ndarray],
-    *,
-    dtype: Union[str, np.dtype, type] = np.float64,
-    inputs: int = 1,
-    outputs: int = 1,
-    extra_bytes: int = 0,
-) -> int:
-    """Estimate total bytes touched by an operation's inputs/outputs."""
-    base = estimate_array_nbytes(shape_or_array, dtype=dtype)
-    return base * (int(inputs) + int(outputs)) + max(0, int(extra_bytes))
+def threadpool_chunks(work_units: int, *, operation: Optional[str] = None, cap: Optional[int] = None) -> Tuple[int, List[Tuple[int, int]]]:
+    """Return ``(workers, ranges)`` for chunking work units across a ThreadPool."""
+    workers = resolve_threadpool_workers(work_units, operation=operation, cap=cap)
+    chunk_size = max(1, math.ceil(max(1, int(work_units)) / workers))
+    chunks = [
+        (start, min(start + chunk_size, int(work_units)))
+        for start in range(0, int(work_units), chunk_size)
+    ]
+    return min(workers, len(chunks)), chunks
 
 
 def overhead_ratio(optimized: float, baseline: float) -> float:
@@ -155,13 +168,25 @@ def check_resource_budget(
     )
 
 
-__all__ = [
-    "DEFAULT_MEMORY_BANDWIDTH_WORKER_CAP",
-    "ResourceBudgetDecision",
-    "check_resource_budget",
-    "estimate_array_nbytes",
-    "estimate_operation_nbytes",
-    "logical_cpu_count",
-    "overhead_ratio",
-    "resolve_threadpool_workers",
-]
+def assert_memory_budget(estimate: MemoryEstimate, *, operation: str) -> None:
+    """Raise ``ResourceBudgetExceeded`` when estimated memory ratio is over budget."""
+    max_overhead = float(config.max_memory_overhead)
+    if estimate.ratio > max_overhead:
+        set_last_selected_path("fallback")
+        raise ResourceBudgetExceeded(
+            f"{operation} estimated RSS overhead {estimate.ratio:.2f}x exceeds "
+            f"configured max_memory_overhead={max_overhead:.2f}x"
+        )
+
+
+def use_threadpool_path(work_units: int, *, operation: Optional[str] = None) -> Tuple[int, List[Tuple[int, int]]]:
+    """Record and return ThreadPool plan for an optimized parallel path."""
+    workers, chunks = threadpool_chunks(work_units, operation=operation)
+    set_last_selected_path("threadpool" if workers > 1 else "serial_numba")
+    return workers, chunks
+
+
+def record_dispatch_path(path: str):
+    """Decorator-style helper for statement-like path recording."""
+    set_last_selected_path(path)
+    return None
