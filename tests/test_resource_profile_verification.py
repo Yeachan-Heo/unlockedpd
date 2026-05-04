@@ -111,6 +111,15 @@ def test_profile_schema_requires_resource_metrics():
     assert issues == []
 
 
+def test_profile_schema_requires_config_resource_fields():
+    profile = _profile(_case("rolling-wide-10mb", "rolling_mean"))
+    del profile["config"]["warmup"]
+
+    issues = validate_profile_schema(profile, "sample")
+
+    assert any("config missing fields: warmup" in issue.message for issue in issues)
+
+
 def test_profile_comparison_passes_parallel_and_dependency_gates(tmp_path):
     baseline = _profile(
         _case("rolling-wide-10mb", "rolling_mean", speedup=2.0),
