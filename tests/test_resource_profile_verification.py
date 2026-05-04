@@ -11,6 +11,7 @@ import pytest
 
 from benchmarks.compare_resource_profiles import (
     compare_profiles,
+    _parse_project_dependencies,
     render_markdown_report,
     validate_profile_schema,
 )
@@ -137,6 +138,10 @@ dependencies = [
     report = render_markdown_report(result)
 
     assert result.passed
+    assert _parse_project_dependencies(pyproject_path) == [
+        "numpy>=1.21",
+        "pandas>=1.5,<3.0",
+    ]
     assert "rolling-wide-10mb" in report
     assert "Warmup/import evidence" in report
     assert result.dependency_rows == [

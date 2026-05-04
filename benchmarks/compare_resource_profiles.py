@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -404,7 +405,17 @@ def _evaluate_after_cases(
 
 
 def _parse_project_dependencies(pyproject_path: Path) -> list[str]:
-    """Extract mandatory project.dependencies without a TOML dependency."""
+    """Extract mandatory project.dependencies without third-party dependencies."""
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback
+        tomllib = None
+
+    if tomllib is not None:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        dependencies = data.get("project", {}).get("dependencies", [])
+        return [str(dependency) for dependency in dependencies]
 
     text = pyproject_path.read_text(encoding="utf-8")
     in_project = False
@@ -456,7 +467,7 @@ def check_runtime_dependencies(
         return
 
     dependencies = _parse_project_dependencies(pyproject_path)
-    mandatory_psutil = any(dep.lower().split(">=", 1)[0].split("==", 1)[0] == "psutil" for dep in dependencies)
+    mandatory_psutil = any(_dependency_name(dep) == "psutil" for dep in dependencies)
     row = {
         "check": "mandatory runtime psutil",
         "path": str(pyproject_path),
@@ -467,6 +478,10 @@ def check_runtime_dependencies(
         result.issues.append(
             ComparisonIssue("FAIL", "psutil is listed as a mandatory runtime dependency")
         )
+
+
+def _dependency_name(dependency: str) -> str:
+    return re.split(r"[<>=!~;\s\[]", dependency, maxsplit=1)[0].strip().lower()
 
 
 def compare_profiles(
