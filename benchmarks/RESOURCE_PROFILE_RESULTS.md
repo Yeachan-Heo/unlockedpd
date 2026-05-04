@@ -1,7 +1,7 @@
 # Resource profile results
 
 Latest broad run after the rank and axis=0 cumulative pass:
-`.omx/artifacts/broad-profile-clean-20260504T183722Z.json`.
+`.omx/artifacts/broad-profile-pct32-20260504T184546Z.json`.
 
 Latest targeted artifacts for the newest accepted changes:
 
@@ -10,6 +10,8 @@ Latest targeted artifacts for the newest accepted changes:
 .omx/artifacts/profile-cumulative-axis0-wide-parfinite128-20260504T181735Z.json
 .omx/artifacts/profile-cumulative-axis0-large-parfinite-20260504T181928Z.json
 .omx/artifacts/profile-transform-axis1-large-native-auto-rerun-factor1p2-20260504T174127Z.json
+.omx/artifacts/profile-transform-axis1-large-pct32-only-20260504T184412Z.json
+.omx/artifacts/broad-profile-pct32-20260504T184546Z.json
 .omx/artifacts/profile-transform-axis1-large-native-auto-caps-factor1p2-20260504T172202Z.json
 .omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json
 .omx/artifacts/profile-cumulative-axis1-threadpool-numba-20260504T152000Z.json
@@ -32,7 +34,7 @@ PYTHONPATH=src poetry run python benchmarks/profile_resources.py --repeats 3 \
   --output .omx/artifacts/profile-cumulative-axis0-large-parfinite-20260504T181928Z.json
 
 PYTHONPATH=src poetry run python benchmarks/profile_resources.py --repeats 3 \
-  --output .omx/artifacts/broad-profile-clean-20260504T183722Z.json
+  --output .omx/artifacts/broad-profile-pct32-20260504T184546Z.json
 ```
 
 The current HPC resource budget follows the revised constraint: higher
@@ -87,30 +89,29 @@ still reported separately.
 | cumulative-axis0-large-256mb | dataframe_cummin | 26.384x | 1.189x | 1.000x | pass | parallel_numba |
 | cumulative-axis0-large-256mb | dataframe_cummax | 27.034x | 1.145x | 1.000x | pass | parallel_numba |
 | transform-axis1-large-256mb | dataframe_diff | 6.784x | 2.390x | 1.000x | pass | native_c |
-| transform-axis1-large-256mb | dataframe_pct_change | 13.430x | 0.767x | 0.997x | pass | native_c |
+| transform-axis1-large-256mb | dataframe_pct_change | 12.805x | 1.323x | 0.997x | pass | native_c |
 | pairwise-safe-rolling-corr | rolling_corr | 21.392x | 0.332x | 0.882x | pass | parallel_numba |
 | pairwise-safe-rolling-corr | rolling_cov | 17.596x | 0.380x | 0.921x | pass | parallel_numba |
 
 ## Latest broad profile summary
 
 The latest broad run used the default `speedup * 1.2` resource gate and covered
-44 cases on the clean code tree for this pass.  `36 / 44` cases met both the 10x target
+44 cases on the clean code tree for this pass.  `37 / 44` cases met both the 10x target
 and the speed-weighted CPU/RAM budget.  The rank and axis=0 cumulative changes
 are successful in the broad matrix; the remaining large-frame blockers are
-`axis=1 diff` and borderline `axis=1 pct_change` at 256MiB.
+`axis=1 diff` at 256MiB.
 
 Rows still below 10x in the latest broad run:
 
 | case | operation | speedup | CPU ratio | RSS ratio | budget | path |
 | --- | --- | ---: | ---: | ---: | --- | --- |
-| import-only | import_unlockedpd | 0.988x | 1.012x | 1.000x | pass | optimized_import |
-| rank-wide-1mb-control | rank_axis1 | 0.999x | 0.997x | 0.998x | pass | pandas_native |
-| transform-axis1-wide-32mb | dataframe_diff | 1.811x | 4.085x | 1.004x | FAIL | parallel_numba |
-| transform-axis1-wide-32mb | dataframe_pct_change | 3.228x | 2.444x | 0.502x | pass | parallel_numba |
-| aggregation-wide-10mb | dataframe_mean | 5.528x | 2.792x | 0.798x | pass | numpy_vectorized |
-| aggregation-wide-10mb | dataframe_sum | 5.678x | 0.179x | 0.790x | pass | numpy_vectorized |
-| transform-axis1-large-256mb | dataframe_diff | 7.086x | 2.419x | 1.000x | pass | native_c |
-| transform-axis1-large-256mb | dataframe_pct_change | 9.779x | 1.175x | 0.997x | pass | native_c |
+| import-only | import_unlockedpd | 0.966x | 1.034x | 1.000x | pass | optimized_import |
+| rank-wide-1mb-control | rank_axis1 | 0.992x | 1.004x | 0.998x | pass | pandas_native |
+| transform-axis1-wide-32mb | dataframe_diff | 1.815x | 4.322x | 1.004x | FAIL | parallel_numba |
+| transform-axis1-wide-32mb | dataframe_pct_change | 3.335x | 2.475x | 0.502x | pass | parallel_numba |
+| aggregation-wide-10mb | dataframe_mean | 4.362x | 5.300x | 0.795x | FAIL | numpy_vectorized |
+| aggregation-wide-10mb | dataframe_sum | 5.053x | 0.202x | 0.790x | pass | numpy_vectorized |
+| transform-axis1-large-256mb | dataframe_diff | 7.121x | 2.266x | 1.000x | pass | native_c |
 
 ## Remaining gap to the universal 10x objective
 
@@ -121,8 +122,6 @@ weak requirements:
 
 - 256MB `axis=1 diff`: native-C auto-dispatch is resource-bounded but still only
   about 7x against the fastest pandas baseline observed in the broad profiler.
-- 256MB `axis=1 pct_change(fill_method=None)`: targeted native-C runs clear 10x,
-  but the clean broad run measured 9.779x, so it remains borderline.
 - 32MB `axis=1 diff/pct_change`: optimized wall time is already ~3-4ms, but
   pandas can measure ~7-15ms in the broad profiler, making universal 10x
   unstable for this medium-wide case.
