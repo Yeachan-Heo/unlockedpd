@@ -11,9 +11,15 @@ true parallelism across columns.
 import numpy as np
 from numba import njit, prange
 import pandas as pd
-
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
-from ._threadpool import run_threadpool_chunks
+from typing import Union
+from concurrent.futures import ThreadPoolExecutor
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._resources import (
+    assert_memory_budget,
+    record_dispatch_path,
+    simple_result_memory_estimate,
+    use_threadpool_path,
+)
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
@@ -742,11 +748,14 @@ def _expanding_mean_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="expanding")
+
     def process_chunk(args):
         start_col, end_col = args
         _expanding_mean_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -762,11 +771,14 @@ def _expanding_sum_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="expanding")
+
     def process_chunk(args):
         start_col, end_col = args
         _expanding_sum_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -777,11 +789,14 @@ def _expanding_std_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="expanding")
+
     def process_chunk(args):
         start_col, end_col = args
         _expanding_std_nogil_chunk(arr, result, start_col, end_col, min_periods, ddof)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -792,11 +807,14 @@ def _expanding_var_threadpool(arr: np.ndarray, min_periods: int, ddof: int = 1) 
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="expanding")
+
     def process_chunk(args):
         start_col, end_col = args
         _expanding_var_nogil_chunk(arr, result, start_col, end_col, min_periods, ddof)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -812,11 +830,14 @@ def _expanding_min_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="expanding")
+
     def process_chunk(args):
         start_col, end_col = args
         _expanding_min_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -832,11 +853,14 @@ def _expanding_max_threadpool(arr: np.ndarray, min_periods: int) -> np.ndarray:
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="expanding")
+
     def process_chunk(args):
         start_col, end_col = args
         _expanding_max_nogil_chunk(arr, result, start_col, end_col, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 

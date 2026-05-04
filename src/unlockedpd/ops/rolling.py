@@ -12,8 +12,13 @@ import numpy as np
 from numba import njit, prange
 import pandas as pd
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
-from ._threadpool import run_threadpool_chunks
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._resources import (
+    assert_memory_budget,
+    record_dispatch_path,
+    simple_result_memory_estimate,
+    use_threadpool_path,
+)
 from ._welford import (
     rolling_std_welford_parallel,
     rolling_std_welford_serial,
@@ -1254,11 +1259,14 @@ def _rolling_mean_threadpool(arr: np.ndarray, window: int, min_periods: int) -> 
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_mean_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1274,11 +1282,14 @@ def _rolling_sum_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_sum_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1294,11 +1305,14 @@ def _rolling_std_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_std_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1314,11 +1328,14 @@ def _rolling_var_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_var_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1334,11 +1351,14 @@ def _rolling_min_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_min_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1354,11 +1374,14 @@ def _rolling_max_threadpool(arr: np.ndarray, window: int, min_periods: int) -> n
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_max_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1369,11 +1392,14 @@ def _rolling_median_threadpool(arr: np.ndarray, window: int, min_periods: int) -
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_median_nogil_chunk(arr, result, start_col, end_col, window, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1384,11 +1410,14 @@ def _rolling_quantile_threadpool(arr: np.ndarray, window: int, min_periods: int,
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_quantile_nogil_chunk(arr, result, start_col, end_col, window, min_periods, quantile)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -1404,11 +1433,14 @@ def _rolling_sem_threadpool(arr: np.ndarray, window: int, min_periods: int, ddof
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="rolling")
+
     def process_chunk(args):
         start_col, end_col = args
         _rolling_sem_nogil_chunk(arr, result, start_col, end_col, window, min_periods, ddof)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 

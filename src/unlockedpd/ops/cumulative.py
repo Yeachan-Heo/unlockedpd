@@ -10,9 +10,14 @@ NumPy by enabling true parallel execution across multiple cores.
 import numpy as np
 import pandas as pd
 from numba import njit
-
 from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
-from ._threadpool import run_threadpool_chunks
+from .._resources import (
+    assert_memory_budget,
+    pairwise_rolling_memory_estimate,
+    record_dispatch_path,
+    simple_result_memory_estimate,
+    use_threadpool_path,
+)
 
 # Thresholds for parallel execution
 # Based on benchmarking: parallel helps when n_cols >= 200 and n_rows >= 5000
@@ -123,11 +128,14 @@ def _cumsum_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     result = np.empty_like(arr)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="cumulative")
+
     def process_chunk(args):
         start_col, end_col = args
         _cumsum_nogil_chunk(arr, result, start_col, end_col)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -138,11 +146,14 @@ def _cumprod_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     result = np.empty_like(arr)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="cumulative")
+
     def process_chunk(args):
         start_col, end_col = args
         _cumprod_nogil_chunk(arr, result, start_col, end_col)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -153,11 +164,14 @@ def _cummin_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     result = np.empty_like(arr)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="cumulative")
+
     def process_chunk(args):
         start_col, end_col = args
         _cummin_nogil_chunk(arr, result, start_col, end_col)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -168,11 +182,14 @@ def _cummax_parallel(arr: np.ndarray, skipna: bool = True) -> np.ndarray:
     result = np.empty_like(arr)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="cumulative")
+
     def process_chunk(args):
         start_col, end_col = args
         _cummax_nogil_chunk(arr, result, start_col, end_col)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 

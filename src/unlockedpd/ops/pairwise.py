@@ -9,12 +9,15 @@ import numpy as np
 from numba import njit
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-import os
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
+from .._resources import (
+    assert_memory_budget,
+    pairwise_rolling_memory_estimate,
+    record_dispatch_path,
+    simple_result_memory_estimate,
+    use_threadpool_path,
+)
 
-from .._compat import get_numeric_columns_fast, ensure_float64
-
-_CPU_COUNT = os.cpu_count() or 8
-THREADPOOL_WORKERS = min(_CPU_COUNT, 32)
 THREADPOOL_THRESHOLD = 10_000_000
 PAIRWISE_MEMORY_AVAILABLE_FRACTION = 0.75
 _FLOAT64_SIZE = np.dtype(np.float64).itemsize
@@ -378,17 +381,14 @@ def _rolling_cov_pairwise_threadpool(arr, window, min_periods, ddof=1):
     result_flat = np.empty((n_rows, n_pairs), dtype=np.float64)
     result_flat[:] = np.nan
 
-    chunk_size = max(1, (n_pairs + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+    workers, chunks = use_threadpool_path(n_pairs, operation="pairwise")
 
     def process_chunk(args):
         start_pair, end_pair = args
         _rolling_cov_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair,
                                         pairs_i, pairs_j, window, min_periods, ddof, n_rows)
 
-    chunks = [(k * chunk_size, min((k + 1) * chunk_size, n_pairs))
-              for k in range(THREADPOOL_WORKERS) if k * chunk_size < n_pairs]
-
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
 
     # Reshape to (n_rows, n_cols, n_cols) symmetric matrix
@@ -415,17 +415,14 @@ def _rolling_corr_pairwise_threadpool(arr, window, min_periods):
     result_flat = np.empty((n_rows, n_pairs), dtype=np.float64)
     result_flat[:] = np.nan
 
-    chunk_size = max(1, (n_pairs + THREADPOOL_WORKERS - 1) // THREADPOOL_WORKERS)
+    workers, chunks = use_threadpool_path(n_pairs, operation="pairwise")
 
     def process_chunk(args):
         start_pair, end_pair = args
         _rolling_corr_matrix_nogil_chunk(arr, result_flat, start_pair, end_pair,
                                          pairs_i, pairs_j, window, min_periods, n_rows)
 
-    chunks = [(k * chunk_size, min((k + 1) * chunk_size, n_pairs))
-              for k in range(THREADPOOL_WORKERS) if k * chunk_size < n_pairs]
-
-    with ThreadPoolExecutor(max_workers=THREADPOOL_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
         list(executor.map(process_chunk, chunks))
 
     result = np.empty((n_rows, n_cols, n_cols), dtype=np.float64)

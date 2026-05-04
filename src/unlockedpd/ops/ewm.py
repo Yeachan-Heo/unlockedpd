@@ -7,14 +7,20 @@ import numpy as np
 from numba import njit, prange
 import pandas as pd
 
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
-from ._threadpool import run_threadpool_chunks
+from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64, ensure_optimal_layout
+from .._resources import (
+    assert_memory_budget,
+    record_dispatch_path,
+    simple_result_memory_estimate,
+    use_threadpool_path,
+)
 
 # Threshold for parallel vs serial execution (elements)
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
 PARALLEL_THRESHOLD = 500_000
 THREADPOOL_THRESHOLD = 10_000_000  # 10M elements
 
+from concurrent.futures import ThreadPoolExecutor
 
 
 # ============================================================================
@@ -637,11 +643,14 @@ def _ewm_mean_threadpool(arr, alpha, adjust, ignore_na, min_periods):
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="ewm")
+
     def process_chunk(args):
         start_col, end_col = args
         _ewm_mean_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
@@ -652,11 +661,14 @@ def _ewm_var_threadpool(arr, alpha, adjust, ignore_na, min_periods, bias):
     result = np.empty((n_rows, n_cols), dtype=np.float64)
     result[:] = np.nan
 
+    workers, chunks = use_threadpool_path(n_cols, operation="ewm")
+
     def process_chunk(args):
         start_col, end_col = args
         _ewm_var_nogil_chunk(arr, result, start_col, end_col, alpha, adjust, ignore_na, min_periods, bias)
 
-    run_threadpool_chunks(n_cols, process_chunk)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(process_chunk, chunks))
 
     return result
 
