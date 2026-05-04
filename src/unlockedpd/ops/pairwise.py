@@ -9,12 +9,9 @@ import numpy as np
 from numba import njit
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-from .._compat import get_numeric_columns_fast, wrap_result, ensure_float64
-from .._resources import (
-    assert_memory_budget,
-    pairwise_rolling_memory_estimate,
-    use_threadpool_path,
-)
+import os
+
+from .._compat import get_numeric_columns_fast, ensure_float64
 
 THREADPOOL_THRESHOLD = 10_000_000
 PAIRWISE_MEMORY_AVAILABLE_FRACTION = 0.75
@@ -539,9 +536,11 @@ def optimized_rolling_cov(rolling_obj, other=None, pairwise=None, ddof=1, *args,
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns to process")
 
-    arr = ensure_float64(numeric_df.values)
-    assert_memory_budget(pairwise_rolling_memory_estimate(arr.shape[0], arr.shape[1]), operation="pairwise rolling cov")
-    result_3d = _rolling_cov_pairwise_threadpool(arr, window, min_periods, ddof)
+    raw_arr = numeric_df.values
+    input_copy_bytes = raw_arr.size * _FLOAT64_SIZE if raw_arr.dtype != np.float64 else 0
+    arr = ensure_float64(raw_arr)
+    n_rows, n_cols = arr.shape
+    _check_pairwise_memory_budget(n_rows, n_cols, raw_arr.nbytes, input_copy_bytes)
 
     result_2d = _rolling_cov_pairwise_threadpool_frame(arr, window, min_periods, ddof)
     return _pairwise_result_frame(result_2d, obj, numeric_df.columns)
@@ -566,9 +565,11 @@ def optimized_rolling_corr(rolling_obj, other=None, pairwise=None, *args, **kwar
     if len(numeric_cols) == 0:
         raise TypeError("No numeric columns to process")
 
-    arr = ensure_float64(numeric_df.values)
-    assert_memory_budget(pairwise_rolling_memory_estimate(arr.shape[0], arr.shape[1]), operation="pairwise rolling corr")
-    result_3d = _rolling_corr_pairwise_threadpool(arr, window, min_periods)
+    raw_arr = numeric_df.values
+    input_copy_bytes = raw_arr.size * _FLOAT64_SIZE if raw_arr.dtype != np.float64 else 0
+    arr = ensure_float64(raw_arr)
+    n_rows, n_cols = arr.shape
+    _check_pairwise_memory_budget(n_rows, n_cols, raw_arr.nbytes, input_copy_bytes)
 
     result_2d = _rolling_corr_pairwise_threadpool_frame(arr, window, min_periods)
     return _pairwise_result_frame(result_2d, obj, numeric_df.columns)
