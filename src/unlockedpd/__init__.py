@@ -14,13 +14,19 @@ Usage:
 Configuration:
     import unlockedpd
     unlockedpd.config.enabled = False  # Disable all optimizations
-    unlockedpd.config.num_threads = 4  # Set thread count
+    unlockedpd.config.num_threads = 4  # Set Numba thread count
+    unlockedpd.config.threadpool_workers = 4  # Cap Python ThreadPool paths
+    unlockedpd.config.warmup = "eager"  # Opt in to import/manual warmup
     unlockedpd.config.warn_on_fallback = True  # Warn when falling back to pandas
     unlockedpd.config.parallel_threshold = 5000  # Min elements for parallel
 
     # Or via environment variables:
     # UNLOCKEDPD_ENABLED=false
     # UNLOCKEDPD_NUM_THREADS=4
+    # UNLOCKEDPD_THREADPOOL_WORKERS=4
+    # UNLOCKEDPD_WARMUP=eager
+    # UNLOCKEDPD_MAX_MEMORY_OVERHEAD=6.0
+    # UNLOCKEDPD_MAX_CPU_OVERHEAD=6.0
     # UNLOCKEDPD_WARN_ON_FALLBACK=true
     # UNLOCKEDPD_PARALLEL_THRESHOLD=10000
 """
@@ -120,11 +126,16 @@ def _warmup_all():
         pass
 
 
-# Auto-patch on import if enabled
+# Public alias for explicit benchmark/server warmup.
+warmup_all = _warmup_all
+
+
+# Auto-patch on import if enabled. Full warmup is lazy by default to avoid
+# import-time resource spikes; set UNLOCKEDPD_WARMUP=eager for server/benchmark use.
 if config.enabled:
     _apply_all_patches()
-    # Warmup after patching to pre-compile functions
-    _warmup_all()
+    if config.warmup == "eager":
+        _warmup_all()
 
 
 __all__ = [
@@ -140,6 +151,7 @@ __all__ = [
     "_PatchRegistry",
     # User utilities
     "jit",
+    "warmup_all",
     # Internal
     "_apply_all_patches",
     "_warmup_all",
