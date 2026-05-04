@@ -234,6 +234,28 @@ class UnlockedConfig:
         with self._lock:
             self._max_cpu_overhead = _coerce_positive_float(value, "max_cpu_overhead")
 
+    @property
+    def max_memory_overhead(self) -> float:
+        """Maximum optimized-vs-pandas RSS ratio budget."""
+        with self._lock:
+            return self._max_memory_overhead
+
+    @max_memory_overhead.setter
+    def max_memory_overhead(self, value: float) -> None:
+        with self._lock:
+            self._max_memory_overhead = _coerce_positive_float(value, "max_memory_overhead")
+
+    @property
+    def max_cpu_overhead(self) -> float:
+        """Maximum optimized-vs-pandas CPU seconds ratio budget."""
+        with self._lock:
+            return self._max_cpu_overhead
+
+    @max_cpu_overhead.setter
+    def max_cpu_overhead(self, value: float) -> None:
+        with self._lock:
+            self._max_cpu_overhead = _coerce_positive_float(value, "max_cpu_overhead")
+
     def apply_thread_config(self) -> None:
         """Apply the current Numba thread configuration."""
         with self._lock:
