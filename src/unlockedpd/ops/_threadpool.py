@@ -1,48 +1,14 @@
-"""Helpers for bounded ThreadPool fan-out in operation modules."""
+"""Thin chunk helpers for bounded ThreadPool fan-out in operation modules."""
 
-import os
+from __future__ import annotations
+
+import math
 from typing import List, Tuple
+
+from .._resources import resolve_threadpool_workers as _resolve_policy_workers
 
 
 DEFAULT_THREADPOOL_WORKER_CAP = 32
-AUTO_VALUES = {"", "0", "auto", "none", "default"}
-
-
-def _coerce_positive_int(value) -> int:
-    """Return a positive integer value, or 0 when unset/auto/invalid."""
-    if value is None:
-        return 0
-
-    if isinstance(value, str):
-        stripped = value.strip().lower()
-        if stripped in AUTO_VALUES:
-            return 0
-        try:
-            parsed = int(stripped)
-        except ValueError:
-            return 0
-    else:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return 0
-
-    return parsed if parsed > 0 else 0
-
-
-def _configured_threadpool_workers() -> int:
-    """Read the runtime/env ThreadPool cap without making config mandatory."""
-    configured = 0
-    try:
-        from .._config import config
-
-    try:
-        return resolve_workers(work_units=work_units, operation_cap=operation_cap)
-    except TypeError:
-        # Compatibility with the integration-lane helper shape that accepts a
-        # generic cap rather than explicit work-unit/operation-cap keywords.
-        cap = min(max(1, int(work_units)), max(1, int(operation_cap)))
-        return resolve_workers(operation="threadpool", cap=cap)
 
 
 def resolve_threadpool_workers(
@@ -50,23 +16,13 @@ def resolve_threadpool_workers(
     *,
     operation_cap: int = DEFAULT_THREADPOOL_WORKER_CAP,
 ) -> int:
-    """Resolve useful ThreadPool workers for a single operation call.
+    """Resolve ThreadPool workers through the shared resource policy."""
 
-    Resolution intentionally caps workers by available work units so wide/large
-    operations keep parallel paths while narrow shapes do not fan out idle
-    Python workers.  When worker-2's config/resource lane adds
-    ``config.threadpool_workers`` this helper will honor it; until then it
-    supports ``UNLOCKEDPD_THREADPOOL_WORKERS`` directly.
-    """
-    units = max(1, int(work_units))
-    cpu_count = os.cpu_count() or 8
-    configured = _configured_threadpool_workers()
-
-    candidates = [units, cpu_count, max(1, int(operation_cap))]
-    if configured:
-        candidates.append(configured)
-
-    return max(1, min(candidates))
+    return _resolve_policy_workers(
+        work_units=max(1, int(work_units)),
+        operation="threadpool",
+        operation_cap=operation_cap,
+    )
 
 
 def make_threadpool_chunks(
@@ -75,15 +31,14 @@ def make_threadpool_chunks(
     operation_cap: int = DEFAULT_THREADPOOL_WORKER_CAP,
 ) -> Tuple[int, List[Tuple[int, int]]]:
     """Return ``(worker_count, chunks)`` for contiguous work-unit ranges."""
+
     units = max(0, int(work_units))
     workers = resolve_threadpool_workers(units or 1, operation_cap=operation_cap)
     if units == 0:
         return workers, []
 
-    chunk_size = max(1, (units + workers - 1) // workers)
+    chunk_size = max(1, math.ceil(units / workers))
     chunks = [
-        (i * chunk_size, min((i + 1) * chunk_size, units))
-        for i in range(workers)
-        if i * chunk_size < units
+        (start, min(start + chunk_size, units)) for start in range(0, units, chunk_size)
     ]
-    return max(1, len(chunks)), chunks
+    return max(1, min(workers, len(chunks))), chunks
