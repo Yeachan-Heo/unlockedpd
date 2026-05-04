@@ -180,6 +180,60 @@ def test_axis1_diff_pct_parallel_numba_fastpath_matches_pandas(monkeypatch):
         assert get_last_selected_path() == "parallel_numba"
 
 
+def test_axis1_native_auto_gate_defaults_to_large_frames(monkeypatch):
+    monkeypatch.delenv("UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS", raising=False)
+    monkeypatch.delenv("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", raising=False)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_AUTO_MIN_BYTES", 1024)
+
+    small = np.empty((4, 4), dtype=np.float64)
+    large = np.empty((32, 8), dtype=np.float64)
+
+    assert not transform_ops._native_transforms_enabled(small)
+    assert transform_ops._native_transforms_enabled(large)
+
+    monkeypatch.setenv("UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS", "1")
+    assert transform_ops._native_transforms_enabled(small)
+
+    monkeypatch.setenv("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", "1")
+    assert not transform_ops._native_transforms_enabled(large)
+
+
+def test_axis1_large_diff_pct_auto_native_path_matches_pandas(monkeypatch):
+    df = _wide_frame(8, 6)
+
+    monkeypatch.delenv("UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS", raising=False)
+    monkeypatch.delenv("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", raising=False)
+    monkeypatch.setattr(transform_ops, "PARALLEL_THRESHOLD", 1)
+    monkeypatch.setattr(transform_ops, "MIN_ROWS_FOR_PARALLEL", 1)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_AUTO_MIN_BYTES", 1)
+
+    def fake_native_axis1_transform(arr, periods, *, op, threads):
+        assert threads >= 1
+        result = np.empty_like(arr)
+        if op == "diff":
+            result[:, :periods] = np.nan
+            result[:, periods:] = arr[:, periods:] - arr[:, :-periods]
+        else:
+            result[:, :periods] = np.nan
+            result[:, periods:] = arr[:, periods:] / arr[:, :-periods] - 1.0
+        return result
+
+    monkeypatch.setattr(
+        transform_ops, "native_axis1_transform", fake_native_axis1_transform
+    )
+
+    for method, kwargs in (
+        ("diff", {"axis": 1}),
+        ("pct_change", {"axis": 1, "fill_method": None}),
+    ):
+        with unlockedpd._PatchRegistry.temporarily_unpatched():
+            expected = getattr(df, method)(**kwargs)
+        result = getattr(df, method)(**kwargs)
+
+        tm.assert_frame_equal(result, expected)
+        assert get_last_selected_path() == "native_c"
+
+
 def test_axis1_native_thread_cap_scales_with_frame_size(monkeypatch):
     monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_BYTES_PER_THREAD", 1)
     monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_SMALL_FRAME_BYTES", 128)

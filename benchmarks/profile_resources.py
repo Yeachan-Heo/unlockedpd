@@ -965,7 +965,7 @@ def _driver_main(args: argparse.Namespace) -> int:
     max_memory = float(os.environ.get("UNLOCKEDPD_MAX_MEMORY_OVERHEAD", "6.0") or 6.0)
     max_cpu = float(os.environ.get("UNLOCKEDPD_MAX_CPU_OVERHEAD", "6.0") or 6.0)
     speedup_resource_factor = float(
-        os.environ.get("UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR", "2.0") or 2.0
+        os.environ.get("UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR", "1.2") or 1.2
     )
 
     for spec in selected_specs:

@@ -4,6 +4,9 @@ Latest broad run before the axis=0 cumulative pass: `.omx/artifacts/broad-profil
 
 Latest targeted axis=0 cumulative run for this pass: `.omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json`.
 
+Latest targeted large axis=1 transform run for the current auto-native gate:
+`.omx/artifacts/profile-transform-axis1-large-native-auto-caps-factor1p2-20260504T172202Z.json`.
+
 Targeted runs for the newest high-risk changes:
 
 ```text
@@ -11,6 +14,8 @@ Targeted runs for the newest high-risk changes:
 .omx/artifacts/profile-cumulative-axis0-current-20260504T155529Z.json
 .omx/artifacts/profile-cumulative-axis0-threadpool-rowblock-20260504T161105Z.json
 .omx/artifacts/profile-cumulative-axis0-native-rowblock-20260504T161655Z.json
+.omx/artifacts/profile-transform-axis1-large-native-auto-caps-factor1p2-20260504T172202Z.json
+.omx/artifacts/profile-transform-axis1-large-native-auto-factor1p2-20260504T171501Z.json
 .omx/artifacts/profile-cumulative-axis1-threadpool-numba-20260504T152000Z.json
 .omx/artifacts/profile-transform-axis1-large-256mb-20260504T153910Z.json
 .omx/artifacts/profile-transform-numba-fastmath-20260504T142318Z.json
@@ -30,6 +35,12 @@ PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=1.2 poetry run python \
   benchmarks/profile_resources.py --repeats 3 \
   --case-filter 'cumulative-axis0-large-256mb' \
   --output .omx/artifacts/profile-cumulative-axis0-large-rowblock-auto32-factor1p2-20260504T163915Z.json
+
+PYTHONPATH=src poetry run python \
+  benchmarks/profile_resources.py --repeats 3 \
+  --case-filter 'transform-axis1-large-256mb:dataframe_diff' \
+  --case-filter 'transform-axis1-large-256mb:dataframe_pct_change' \
+  --output .omx/artifacts/profile-transform-axis1-large-native-auto-caps-factor1p2-20260504T172202Z.json
 
 PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
   benchmarks/profile_resources.py --repeats 5 \
@@ -74,15 +85,19 @@ still reported separately.
 
 ## Current pass enhancements
 
-- `axis=1 diff` now uses a stable row-parallel Numba kernel by default instead
-  of pandas `shift` primitives or the noisy native-C transform path.
-- `axis=1 pct_change(fill_method=None)` now uses the same stable row-parallel
-  Numba path with `fastmath=True`; NaN/Inf regression coverage still matches
-  pandas for the tested edge cases.
-- The older native-C transform path is now explicit opt-in via
-  `UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS=1` because the subprocess profiler showed
-  higher variance than the Numba path.  It remains pthread create/join only, with
-  no persistent native worker pool.
+- Non-large `axis=1 diff` uses a stable row-parallel Numba kernel instead of
+  pandas `shift` primitives or the noisy small-frame native-C transform path.
+- Non-large `axis=1 pct_change(fill_method=None)` uses the same stable
+  row-parallel Numba path with `fastmath=True`; NaN/Inf regression coverage
+  still matches pandas for the tested edge cases.
+- Large `axis=1 diff/pct_change(fill_method=None)` frames now auto-promote to
+  the native-C pthread transform path at 256MiB and above.  Smaller frames stay
+  on the stable Numba/pandas paths unless `UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS=1`
+  explicitly opts in.  `UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS=1` remains a hard
+  escape hatch.  The native path creates and joins pthread workers per call, so
+  it does not leave a persistent native worker pool behind.
+- The profiler's speedup-weighted resource factor now defaults consistently to
+  `1.2` in both the run config snapshot and the actual summary gate.
 - Dense default `rank(axis=1, method='average')` can use an optional cached
   C++/pthread row-sort kernel for no-NaN wide rows.  It is bounded by frame size,
   row count, and machine CPU count, and joins workers before returning.
@@ -115,6 +130,8 @@ still reported separately.
 | transform-axis1-large-256mb | dataframe_diff | 2.032x | 3.653x | 1.000x | pass | parallel_numba |
 | transform-axis1-large-256mb | dataframe_shift | 22.596x | 0.044x | 0.004x | pass | pandas_native |
 | transform-axis1-large-256mb | dataframe_pct_change | 3.511x | 2.113x | 0.997x | pass | parallel_numba |
+| transform-axis1-large-256mb | dataframe_diff | 7.747x | 2.816x | 1.000x | pass | native_c |
+| transform-axis1-large-256mb | dataframe_pct_change | 11.618x | 0.867x | 0.997x | pass | native_c |
 | cumulative-axis0-large-256mb | dataframe_cumsum | 20.705x | 0.207x | 1.000x | pass | parallel_numba |
 | cumulative-axis0-large-256mb | dataframe_cumprod | 18.136x | 0.287x | 1.000x | pass | parallel_numba |
 | cumulative-axis0-large-256mb | dataframe_cummin | 108.049x | 0.124x | 1.000x | pass | parallel_numba |
@@ -126,6 +143,11 @@ still reported separately.
 | rank-axis1-wide-32mb | rank_axis1 | 10.927x | 0.439x | 1.121x | pass | native_cpp |
 | pairwise-safe-rolling-corr | rolling_corr | 21.392x | 0.332x | 0.882x | pass | parallel_numba |
 | pairwise-safe-rolling-corr | rolling_cov | 17.596x | 0.380x | 0.921x | pass | parallel_numba |
+
+The latest native auto-dispatch transform artifact was captured while the host
+was heavily loaded by unrelated long-running CPU jobs and with the tree dirty;
+it is useful dispatch/regression evidence, not a clean completion proof for the
+universal 10x objective.
 
 ## Latest broad profile summary
 
@@ -163,8 +185,13 @@ speed-weighted CPU/RAM budget under targeted profiling and now has targeted
 rolling, and some 32MB transform runs.  Remaining weak or noisy
 rows are:
 
-- 256MB `axis=1` transform `diff/pct_change`: explicit large-frame coverage now
-  shows 2-4x, so this is the main remaining true large-DataFrame blocker.
+- 256MB `axis=1` transform `diff`: large-frame native auto-dispatch improved
+  the loaded-host profiler from 2-4x to 7.747x mean / 7.545x median, but it is
+  still below the universal 10x target and remains the main true large-DataFrame
+  blocker.
+- 256MB `axis=1 pct_change(fill_method=None)`: now clears 10x in the latest
+  targeted native auto-dispatch run, but needs a fresh clean broad run before it
+  can be removed from the watch list.
 - 10MB `axis=0` `sum/mean`: stable around 5-7x in subprocess profiling.  This is
   a sub-millisecond optimized path; native C row-block reduction was tested and
   rejected because it made the profiler slower.
@@ -178,8 +205,8 @@ rows are:
 Rejected or bounded experiments include low-threshold axis=0 row-block dispatch,
 unbounded BLAS/dot dispatch, direct native-C axis=0 reduction, NumExpr,
 Bottleneck, Rust/Rayon prototypes, native C cumulative kernels, transient
-ThreadPool row-block axis=0 cumulative, and default native-C axis=1 transform
-dispatch.  OpenMP native transform kernels were faster
+ThreadPool row-block axis=0 cumulative, and native worker CPU-affinity pinning
+for axis=1 transforms.  OpenMP native transform kernels were faster
 in raw wall time but left extra worker threads alive after the call, so they are
 not accepted as resource-clean.  A transient ThreadPool+Numba `nogil` axis=1
 transform experiment was also rejected after

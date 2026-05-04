@@ -5,6 +5,7 @@ with SHAPE-ADAPTIVE parallelization - automatically chooses row vs column parall
 based on array dimensions for maximum CPU utilization.
 """
 import os
+from typing import Optional
 
 import numpy as np
 from numba import get_num_threads, njit, prange, set_num_threads
@@ -34,31 +35,58 @@ MIN_ROWS_FOR_PARALLEL = 2000
 AXIS1_TRANSFORM_THREAD_CAP = 8
 AXIS1_NATIVE_BYTES_PER_THREAD = 4 * 1024 * 1024
 AXIS1_NATIVE_DIFF_SMALL_CAP = 8
-AXIS1_NATIVE_DIFF_MEDIUM_CAP = 16
+AXIS1_NATIVE_DIFF_MEDIUM_CAP = 32
 AXIS1_NATIVE_DIFF_LARGE_CAP = 32
-AXIS1_NATIVE_PCT_SMALL_CAP = 8
+AXIS1_NATIVE_PCT_SMALL_CAP = 16
 AXIS1_NATIVE_PCT_MEDIUM_CAP = 16
 AXIS1_NATIVE_PCT_LARGE_CAP = 32
 AXIS1_NATIVE_SMALL_FRAME_BYTES = 64 * 1024 * 1024
 AXIS1_NATIVE_MEDIUM_FRAME_BYTES = 512 * 1024 * 1024
+AXIS1_NATIVE_AUTO_MIN_BYTES = 256 * 1024 * 1024
 
 
-def _native_transforms_enabled() -> bool:
-    """Return whether the experimental native transform path is explicitly on."""
+def _native_transforms_disabled() -> bool:
+    """Return whether the optional native transform path is explicitly off."""
 
-    enabled = os.environ.get("UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS", "").lower() in {
+    return os.environ.get("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", "").lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    disabled = os.environ.get("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", "").lower() in {
+
+
+def _native_transforms_explicitly_enabled() -> bool:
+    """Return whether the optional native transform path is explicitly on."""
+
+    return os.environ.get("UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS", "").lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    return enabled and not disabled
+
+
+def _native_transforms_enabled(arr: Optional[np.ndarray] = None) -> bool:
+    """Return whether native axis=1 transforms should run for this frame.
+
+    The native pthread kernels create and join their workers inside the call, so
+    they do not leave an unbounded thread leak behind.  They are still promoted
+    only for large frames by default because smaller 32MB transform cases are
+    noisy and can be faster on the existing Numba/pandas paths.  The environment
+    variables remain an explicit override surface for experiments and support:
+    ``UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS=1`` forces the native attempt, while
+    ``UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS=1`` always disables it.
+    """
+
+    if _native_transforms_disabled():
+        return False
+    if _native_transforms_explicitly_enabled():
+        return True
+    return (
+        arr is not None
+        and int(getattr(arr, "nbytes", 0)) >= AXIS1_NATIVE_AUTO_MIN_BYTES
+    )
 
 
 def _normalize_axis(axis) -> int:
@@ -139,10 +167,10 @@ def _axis1_native_operation_cap(arr: np.ndarray, op: str) -> int:
     Native axis=1 transforms are memory-bandwidth-bound.  More cores help only
     until row chunks become too small or the memory subsystem saturates, so the
     cap scales with frame bytes but remains below the machine's logical CPU
-    count.  The per-operation ceilings reflect measured saturation points:
-    ``diff`` benefits from 16 workers on larger frames, while ``pct_change`` is
-    divide-heavy and should stay conservative until the frame is substantially
-    larger.
+    count.  The per-operation ceilings reflect measured saturation points on
+    the 384-logical-CPU benchmark host: large ``diff`` benefits from a wider
+    32-worker burst under machine load, while ``pct_change`` clears the large
+    target with a smaller but still doubled 16-worker cap at 256MB.
     """
 
     nbytes = int(getattr(arr, "nbytes", 0))
@@ -665,7 +693,7 @@ def optimized_diff(df, periods=1, axis=0):
                 and arr.size >= PARALLEL_THRESHOLD
                 and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
             ):
-                if _native_transforms_enabled():
+                if _native_transforms_enabled(arr):
                     result = _axis1_native_transform(arr, periods, "diff")
                     if result is not None:
                         return wrap_result_fast(result, df)
@@ -746,7 +774,7 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
                 and arr.size >= PARALLEL_THRESHOLD
                 and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
             ):
-                if _native_transforms_enabled():
+                if _native_transforms_enabled(arr):
                     result = _axis1_native_transform(arr, periods, "pct")
                     if result is not None:
                         return wrap_result_fast(result, df)
