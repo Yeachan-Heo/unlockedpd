@@ -329,6 +329,9 @@ class _ThreadSampler:
 
 
 def _resource_config_snapshot() -> Dict[str, Any]:
+    speedup_resource_factor = float(
+        os.environ.get("UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR", "2.0") or 2.0
+    )
     try:
         import unlockedpd
 
@@ -338,6 +341,7 @@ def _resource_config_snapshot() -> Dict[str, Any]:
             "threadpool_workers": getattr(cfg, "threadpool_workers", 0) or "auto",
             "max_memory_overhead": getattr(cfg, "max_memory_overhead", 6.0),
             "max_cpu_overhead": getattr(cfg, "max_cpu_overhead", 6.0),
+            "speedup_weighted_resource_factor": speedup_resource_factor,
             "warmup": getattr(
                 cfg, "warmup", os.environ.get("UNLOCKEDPD_WARMUP", "legacy_eager")
             ),
@@ -354,6 +358,7 @@ def _resource_config_snapshot() -> Dict[str, Any]:
             "max_cpu_overhead": float(
                 os.environ.get("UNLOCKEDPD_MAX_CPU_OVERHEAD", "6.0") or 6.0
             ),
+            "speedup_weighted_resource_factor": speedup_resource_factor,
             "warmup": os.environ.get("UNLOCKEDPD_WARMUP", "legacy_eager"),
         }
 
@@ -735,6 +740,7 @@ def _summarize(
     parallelism_gate: bool,
     max_memory: float,
     max_cpu: float,
+    speedup_resource_factor: float,
 ) -> Dict[str, Any]:
     pandas = [
         r for r in records if r.get("implementation") == "pandas" and not r.get("error")
@@ -785,14 +791,23 @@ def _summarize(
     )
     selected_paths = sorted({str(r.get("selected_path", "unknown")) for r in opt})
     selected_parallel = any(
-        p in {"threadpool", "parallel_numba", "numpy_vectorized", "native_c"}
+        p
+        in {
+            "threadpool",
+            "parallel_numba",
+            "numpy_vectorized",
+            "native_c",
+            "native_cpp",
+        }
         for p in selected_paths
     )
     resource_ok = (cpu_ratio is None or cpu_ratio <= max_cpu) and (
         rss_ratio is None or rss_ratio <= max_memory
     )
     speedup_weighted_resource_limit = (
-        speedup * 1.2 if speedup is not None and math.isfinite(speedup) else None
+        speedup * speedup_resource_factor
+        if speedup is not None and math.isfinite(speedup)
+        else None
     )
     speedup_weighted_resource_ok = speedup_weighted_resource_limit is None or (
         (cpu_ratio is None or cpu_ratio <= speedup_weighted_resource_limit)
@@ -808,6 +823,7 @@ def _summarize(
         if len(selected_paths) == 1
         else selected_paths,
         "pass_resource_budget": bool(resource_ok),
+        "speedup_weighted_resource_factor": speedup_resource_factor,
         "speedup_weighted_resource_limit": speedup_weighted_resource_limit,
         "pass_speedup_weighted_resource_budget": bool(speedup_weighted_resource_ok),
         "pass_parallelism_gate": bool(
@@ -857,6 +873,9 @@ def _driver_main(args: argparse.Namespace) -> int:
     cases = []
     max_memory = float(os.environ.get("UNLOCKEDPD_MAX_MEMORY_OVERHEAD", "6.0") or 6.0)
     max_cpu = float(os.environ.get("UNLOCKEDPD_MAX_CPU_OVERHEAD", "6.0") or 6.0)
+    speedup_resource_factor = float(
+        os.environ.get("UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR", "2.0") or 2.0
+    )
 
     for spec in selected_specs:
         for mode in modes:
@@ -878,7 +897,11 @@ def _driver_main(args: argparse.Namespace) -> int:
             case["mode"] = mode
             case["repeats"] = repeats
             case["summary"] = _summarize(
-                repeats, spec.parallelism_gate, max_memory, max_cpu
+                repeats,
+                spec.parallelism_gate,
+                max_memory,
+                max_cpu,
+                speedup_resource_factor,
             )
             cases.append(case)
             print(f"profiled {spec.case_id}:{spec.operation}:{mode}", file=sys.stderr)

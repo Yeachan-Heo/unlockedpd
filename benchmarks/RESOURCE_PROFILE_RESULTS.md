@@ -1,89 +1,134 @@
 # Resource profile results
 
-Latest broad run: `.omx/artifacts/broad-profile-native-c-cap8-final-20260504T125650Z.json`.
-Latest targeted run for changed/high-risk areas: `.omx/artifacts/profile-targeted-native-c-cap8-final-20260504T130116Z.json`.
+Latest broad run for the current code: `.omx/artifacts/broad-profile-current-transform-rank-pairwise-budget2-20260504T145226Z.json`.
+
+Targeted runs for the newest high-risk changes:
+
+```text
+.omx/artifacts/profile-transform-numba-fastmath-20260504T142318Z.json
+.omx/artifacts/profile-rank-native-cpp-cap32-gate-20260504T140727Z.json
+.omx/artifacts/profile-pairwise-numba-prange-20260504T144502Z.json
+.omx/artifacts/profile-axis0-wide-after-transform-rank-pairwise-20260504T144740Z.json
+```
 
 Commands:
 
 ```bash
-PYTHONPATH=src poetry run python benchmarks/profile_resources.py --repeats 5 --output .omx/artifacts/broad-profile-native-c-cap8-final-20260504T125650Z.json
-PYTHONPATH=src poetry run python benchmarks/profile_resources.py --repeats 7 \
-  --case-filter 'aggregation-wide-10mb' \
-  --case-filter 'aggregation-medium-100mb' \
-  --case-filter 'cumulative-axis1-wide-32mb' \
+PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
+  benchmarks/profile_resources.py --repeats 5 \
+  --output .omx/artifacts/broad-profile-current-transform-rank-pairwise-budget2-20260504T145226Z.json
+
+PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
+  benchmarks/profile_resources.py --repeats 7 \
   --case-filter 'transform-axis1-wide-32mb' \
-  --output .omx/artifacts/profile-targeted-native-c-cap8-final-20260504T130116Z.json
+  --output .omx/artifacts/profile-transform-numba-fastmath-20260504T142318Z.json
+
+PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
+  benchmarks/profile_resources.py --repeats 7 \
+  --case-filter 'rank-axis1-wide-32mb' \
+  --output .omx/artifacts/profile-rank-native-cpp-cap32-gate-20260504T140727Z.json
+
+PYTHONPATH=src UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR=2.0 poetry run python \
+  benchmarks/profile_resources.py --repeats 7 \
+  --case-filter 'pairwise-safe-rolling-corr' \
+  --output .omx/artifacts/profile-pairwise-numba-prange-20260504T144502Z.json
 ```
 
-The resource budget is speedup-weighted:
+The current HPC resource budget follows the revised constraint: higher
+utilization is acceptable when it buys speed, while true leaks are not.  The
+profiler default is now:
 
 ```text
-optimized_cpu_ratio <= speedup * 1.2
-optimized_rss_ratio <= speedup * 1.2
+optimized_cpu_ratio <= speedup * 2.0
+optimized_rss_ratio <= speedup * 2.0
 ```
+
+Override with `UNLOCKEDPD_SPEEDUP_RESOURCE_FACTOR` for stricter or looser gates.
+Fixed absolute config ceilings (`max_cpu_overhead` and `max_memory_overhead`) are
+still reported separately.
 
 ## Current pass enhancements
 
-- Dense mid-sized `axis=0` `DataFrame.sum/mean` can use a bounded OpenBLAS GEMV path (`arr.T @ ones`) with the OpenBLAS thread count capped during the call and restored afterwards.
-- Large real-numeric `axis=1 diff` and `pct_change(fill_method=None)` can use an optional cached native C/pthread kernel.  It compiles into the user cache on first use when a C compiler is available, falls back cleanly otherwise, and does not leave extra worker threads alive after each call.
-- `axis=1 shift(fill_value=None)` remains on pandas' no-fill native metadata path, which is still the fastest resource-clean option.
+- `axis=1 diff` now uses a stable row-parallel Numba kernel by default instead
+  of pandas `shift` primitives or the noisy native-C transform path.
+- `axis=1 pct_change(fill_method=None)` now uses the same stable row-parallel
+  Numba path with `fastmath=True`; NaN/Inf regression coverage still matches
+  pandas for the tested edge cases.
+- The older native-C transform path is now explicit opt-in via
+  `UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS=1` because the subprocess profiler showed
+  higher variance than the Numba path.  It remains pthread create/join only, with
+  no persistent native worker pool.
+- Dense default `rank(axis=1, method='average')` can use an optional cached
+  C++/pthread row-sort kernel for no-NaN wide rows.  It is bounded by frame size,
+  row count, and machine CPU count, and joins workers before returning.
+- Pairwise rolling `corr/cov` now uses a single bounded Numba `prange` kernel
+  over upper-triangle pairs, avoiding Python ThreadPool chunk orchestration in
+  the hot path.
+- Dense mid-sized `axis=0` `DataFrame.sum/mean` retain the bounded OpenBLAS GEMV
+  path with a size-aware thread cap and restore the previous OpenBLAS thread
+  count afterwards.  A native-C row-block reducer was tested and rejected because
+  it was slower in subprocess profiling.
+- `axis=1 shift(fill_value=None)` remains on pandas' no-fill native metadata
+  path, still the fastest resource-clean option.
 
-## Targeted evidence for changed/high-risk areas
-
-| case | operation | speedup | CPU ratio | RSS ratio | budget | optimized path |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| aggregation-wide-10mb | dataframe_mean | 5.253x | 1.238x | 0.796x | pass | numpy_vectorized |
-| aggregation-wide-10mb | dataframe_sum | 5.584x | 2.195x | 0.790x | pass | numpy_vectorized |
-| aggregation-medium-100mb | dataframe_mean | 20.389x | 1.042x | 0.080x | pass | parallel_numba |
-| aggregation-medium-100mb | dataframe_sum | 17.245x | 2.295x | 0.080x | pass | parallel_numba |
-| cumulative-axis1-wide-32mb | dataframe_cumsum | 11.863x | 0.084x | 1.007x | pass | numpy_vectorized |
-| cumulative-axis1-wide-32mb | dataframe_cumprod | 11.566x | 0.087x | 1.007x | pass | numpy_vectorized |
-| cumulative-axis1-wide-32mb | dataframe_cummin | 11.210x | 0.089x | 1.007x | pass | numpy_vectorized |
-| cumulative-axis1-wide-32mb | dataframe_cummax | 10.739x | 0.093x | 1.007x | pass | numpy_vectorized |
-| transform-axis1-wide-32mb | dataframe_diff | 3.118x | 1.620x | 1.004x | pass | native_c |
-| transform-axis1-wide-32mb | dataframe_shift | 11.181x | 0.091x | 0.031x | pass | pandas_native |
-| transform-axis1-wide-32mb | dataframe_pct_change | 6.379x | 0.888x | 0.502x | pass | native_c |
-
-## Broad profile summary
+## Targeted evidence for newest changes
 
 | case | operation | speedup | CPU ratio | RSS ratio | budget | path |
 | --- | --- | ---: | ---: | ---: | --- | --- |
-| import-only | import_unlockedpd | 0.992x | 1.015x | 1.000x | pass | optimized_import |
-| rank-wide-1mb-control | rank_axis1 | 1.063x | 0.938x | 0.995x | pass | pandas_native |
-| transform-axis1-wide-32mb | dataframe_diff | 2.374x | 1.763x | 1.004x | pass | native_c |
-| transform-axis1-wide-32mb | dataframe_pct_change | 4.037x | 0.972x | 0.502x | pass | native_c |
-| aggregation-wide-10mb | dataframe_sum | 4.952x | 2.406x | 0.790x | pass | numpy_vectorized |
-| aggregation-wide-10mb | dataframe_mean | 5.463x | 0.891x | 0.794x | pass | numpy_vectorized |
-| cumulative-axis1-wide-32mb | dataframe_cummax | 11.078x | 0.090x | 1.007x | pass | numpy_vectorized |
-| rank-axis1-wide-32mb | rank_axis1 | 11.200x | 0.606x | 1.121x | pass | parallel_numba |
-| rolling-axis1-wide-32mb | rolling_min | 11.507x | 0.270x | 0.955x | pass | parallel_numba |
-| transform-axis1-wide-32mb | dataframe_shift | 11.526x | 0.088x | 0.031x | pass | pandas_native |
-| cumulative-axis1-wide-32mb | dataframe_cummin | 11.559x | 0.087x | 1.007x | pass | numpy_vectorized |
-| cumulative-axis1-wide-32mb | dataframe_cumprod | 11.918x | 0.084x | 1.007x | pass | numpy_vectorized |
-| cumulative-axis1-wide-32mb | dataframe_cumsum | 12.206x | 0.082x | 1.007x | pass | numpy_vectorized |
-| aggregation-axis1-wide-32mb | dataframe_min | 12.304x | 2.028x | 0.254x | pass | parallel_numba |
-| aggregation-axis1-wide-32mb | dataframe_max | 12.560x | 2.049x | 0.254x | pass | parallel_numba |
-| rolling-axis1-wide-32mb | rolling_max | 12.567x | 0.249x | 0.964x | pass | parallel_numba |
-| aggregation-axis1-wide-32mb | dataframe_mean | 14.680x | 1.533x | 0.254x | pass | parallel_numba |
-| pairwise-safe-rolling-corr | rolling_cov | 15.263x | 0.325x | 0.898x | pass | threadpool |
-| pairwise-safe-rolling-corr | rolling_corr | 15.514x | 0.350x | 0.895x | pass | threadpool |
-| aggregation-axis1-wide-32mb | dataframe_sum | 15.840x | 0.539x | 0.254x | pass | parallel_numba |
-| aggregation-medium-100mb | dataframe_sum | 17.844x | 1.723x | 0.080x | pass | parallel_numba |
-| expanding-wide-10mb | expanding_mean | 22.079x | 0.795x | 0.501x | pass | parallel_numba |
-| aggregation-medium-100mb | dataframe_mean | 24.453x | 1.311x | 0.080x | pass | parallel_numba |
-| rolling-wide-10mb | rolling_mean | 26.021x | 0.544x | 0.998x | pass | parallel_numba |
-| rolling-axis1-wide-32mb | rolling_std | 26.394x | 0.323x | 0.953x | pass | parallel_numba |
-| rolling-wide-10mb | rolling_sum | 28.409x | 0.580x | 0.999x | pass | parallel_numba |
-| rolling-medium-100mb | rolling_mean | 30.058x | 0.501x | 1.000x | pass | parallel_numba |
-| rolling-axis1-wide-32mb | rolling_var | 31.419x | 0.314x | 0.839x | pass | parallel_numba |
-| rolling-medium-100mb | rolling_std | 35.026x | 0.423x | 1.000x | pass | parallel_numba |
-| rolling-axis1-wide-32mb | rolling_sum | 35.078x | 0.282x | 0.834x | pass | parallel_numba |
-| rolling-axis1-wide-32mb | rolling_mean | 41.726x | 0.257x | 0.858x | pass | parallel_numba |
-| aggregation-axis1-wide-32mb | dataframe_std | 51.301x | 0.404x | 0.251x | pass | parallel_numba |
-| aggregation-axis1-wide-32mb | dataframe_var | 52.255x | 0.394x | 0.251x | pass | parallel_numba |
+| transform-axis1-wide-32mb | dataframe_diff | 21.546x | 0.356x | 1.004x | pass | parallel_numba |
+| transform-axis1-wide-32mb | dataframe_shift | 309.556x | 0.002x | 0.031x | pass | pandas_native |
+| transform-axis1-wide-32mb | dataframe_pct_change | 16.006x | 0.511x | 0.502x | pass | parallel_numba |
+| rank-axis1-wide-32mb | rank_axis1 | 10.927x | 0.439x | 1.121x | pass | native_cpp |
+| pairwise-safe-rolling-corr | rolling_corr | 21.392x | 0.332x | 0.882x | pass | parallel_numba |
+| pairwise-safe-rolling-corr | rolling_cov | 17.596x | 0.380x | 0.921x | pass | parallel_numba |
+
+## Latest broad profile summary
+
+All 33 broad-profile rows pass the `speedup * 2.0` CPU/RAM gate.  Universal 10x
+is still **not** proven by the broad run: seven large-dataframe rows remain below
+10x in this noisy run, plus the import and 1MB rank controls which are not large
+DataFrame optimization targets.
+
+Slowest rows from the latest broad run:
+
+| case | operation | speedup | CPU ratio | RSS ratio | budget | path |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| rank-wide-1mb-control | rank_axis1 | 0.989x | 1.009x | 0.994x | pass | pandas_native |
+| import-only | import_unlockedpd | 1.037x | 0.962x | 1.000x | pass | optimized_import |
+| transform-axis1-wide-32mb | dataframe_pct_change | 3.178x | 2.407x | 0.502x | pass | parallel_numba |
+| cumulative-axis1-wide-32mb | dataframe_cummin | 3.726x | 0.268x | 1.007x | pass | numpy_vectorized |
+| aggregation-wide-10mb | dataframe_mean | 4.623x | 3.375x | 0.794x | pass | numpy_vectorized |
+| cumulative-axis1-wide-32mb | dataframe_cumsum | 5.593x | 0.179x | 1.007x | pass | numpy_vectorized |
+| cumulative-axis1-wide-32mb | dataframe_cummax | 6.026x | 0.166x | 1.007x | pass | numpy_vectorized |
+| aggregation-wide-10mb | dataframe_sum | 6.622x | 2.762x | 0.789x | pass | numpy_vectorized |
+| cumulative-axis1-wide-32mb | dataframe_cumprod | 9.560x | 0.105x | 1.007x | pass | numpy_vectorized |
+| transform-axis1-wide-32mb | dataframe_shift | 10.389x | 0.097x | 0.031x | pass | pandas_native |
+| rank-axis1-wide-32mb | rank_axis1 | 10.847x | 0.417x | 1.120x | pass | native_cpp |
+| transform-axis1-wide-32mb | dataframe_diff | 12.832x | 0.566x | 1.004x | pass | parallel_numba |
+| pairwise-safe-rolling-corr | rolling_corr | 19.054x | 0.391x | 0.859x | pass | parallel_numba |
+
+Representative high-confidence wins from the same run include large axis=1
+aggregation, rolling, pairwise, rank, and diff rows at >10x while staying inside
+the speed-weighted resource budget.
 
 ## Remaining gap to the universal 10x objective
 
-Universal 10x is still **not** met.  The latest broad and targeted profiles are resource-clean, and almost all large-frame cases now clear 10x.  Remaining speed gaps are `axis=1 diff` (~2.4-3.1x), `axis=1 pct_change(fill_method=None)` (~4.0-6.4x), and the 10MB `axis=0` `sum/mean` case (~5x).  The small import/rank control cases are intentionally not large-dataframe optimization targets.
+Universal 10x is still **not achieved**.  The current code is resource-clean
+under the revised HPC budget and now has targeted >10x evidence for transform
+`diff`, transform `pct_change`, rank, and pairwise rolling.  Remaining weak or
+noisy rows are:
 
-Rejected or bounded experiments include low-threshold axis=0 row-block dispatch for the 10MB case, unbounded BLAS/dot dispatch that failed CPU budget, direct Numba `axis=1 diff` because CPU ratio exceeded the speedup-weighted budget, NumExpr, Bottleneck, and Rust/Rayon prototypes.  OpenMP native transform kernels were faster than pthreads but left extra worker threads alive after the call, so the committed native path uses pthread create/join to avoid thread leaks.
+- 10MB `axis=0` `sum/mean`: stable around 5-7x in subprocess profiling.  This is
+  a sub-millisecond optimized path; native C row-block reduction was tested and
+  rejected because it made the profiler slower.
+- `axis=1 pct_change(fill_method=None)`: targeted run reached 16x, but the broad
+  run can still drop below 10x when pandas' baseline is unusually low.
+- `axis=1` cumulative ops: optimized NumPy-vectorized calls are usually around
+  ~20-30ms and often >10x, but broad runs show large machine-load outliers.
+
+Rejected or bounded experiments include low-threshold axis=0 row-block dispatch,
+unbounded BLAS/dot dispatch, direct native-C axis=0 reduction, NumExpr,
+Bottleneck, Rust/Rayon prototypes, native C cumulative kernels, and default
+native-C axis=1 transform dispatch.  OpenMP native transform kernels were faster
+in raw wall time but left extra worker threads alive after the call, so they are
+not accepted as resource-clean.

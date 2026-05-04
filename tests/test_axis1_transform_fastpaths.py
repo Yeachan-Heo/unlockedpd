@@ -125,13 +125,12 @@ def test_axis1_pct_change_parallel_numba_fastpath_matches_pandas(monkeypatch):
         assert get_last_selected_path() == "parallel_numba"
 
 
-def test_axis1_native_transform_fastpath_matches_pandas_when_available(monkeypatch):
+def test_axis1_diff_pct_parallel_numba_fastpath_matches_pandas(monkeypatch):
     df = _wide_frame(8, 6)
     df.iloc[0, 0] = 0.0
     df.iloc[1, 1] = np.nan
     df.iloc[2, 2] = np.inf
 
-    monkeypatch.delenv("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", raising=False)
     monkeypatch.setattr(transform_ops, "PARALLEL_THRESHOLD", 1)
     monkeypatch.setattr(transform_ops, "MIN_ROWS_FOR_PARALLEL", 1)
 
@@ -148,11 +147,27 @@ def test_axis1_native_transform_fastpath_matches_pandas_when_available(monkeypat
         result = getattr(df, method)(**kwargs)
 
         tm.assert_frame_equal(result, expected)
-        assert get_last_selected_path() in {
-            "native_c",
-            "pandas_primitives",
-            "parallel_numba",
-        }
+        assert get_last_selected_path() == "parallel_numba"
+
+
+def test_axis1_native_thread_cap_scales_with_frame_size(monkeypatch):
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_BYTES_PER_THREAD", 1)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_SMALL_FRAME_BYTES", 128)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_MEDIUM_FRAME_BYTES", 4096)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_DIFF_SMALL_CAP", 2)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_DIFF_MEDIUM_CAP", 4)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_DIFF_LARGE_CAP", 8)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_PCT_SMALL_CAP", 2)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_PCT_MEDIUM_CAP", 4)
+    monkeypatch.setattr(transform_ops, "AXIS1_NATIVE_PCT_LARGE_CAP", 8)
+
+    small = np.empty((8, 1), dtype=np.float64)
+    medium = np.empty((8, 32), dtype=np.float64)
+    large = np.empty((8, 1024), dtype=np.float64)
+
+    assert transform_ops._axis1_native_operation_cap(small, "diff") == 2
+    assert transform_ops._axis1_native_operation_cap(medium, "diff") == 4
+    assert transform_ops._axis1_native_operation_cap(large, "diff") == 8
 
 
 def test_axis1_shift_fill_none_uses_no_fill_value_native_path():

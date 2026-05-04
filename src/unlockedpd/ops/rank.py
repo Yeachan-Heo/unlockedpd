@@ -15,7 +15,8 @@ from .._compat import (
     ensure_float64,
     ensure_optimal_layout,
 )
-from .._resources import resolve_threadpool_workers
+from .._resources import logical_cpu_count, record_dispatch_path, resolve_threadpool_workers
+from ._rank_native import native_axis1_rank_average_no_nan
 
 
 # na_option encoding: 0='keep', 1='top', 2='bottom'
@@ -25,6 +26,8 @@ NA_OPTION_MAP = {"keep": 0, "top": 1, "bottom": 2}
 # Parallel overhead is ~1-2ms, so we need enough work to amortize it
 PARALLEL_THRESHOLD = 500_000
 RANK_THREAD_CAP = 32
+RANK_NATIVE_BYTES_PER_THREAD = 512 * 1024
+RANK_NATIVE_THREAD_CAP = 32
 
 
 def _bounded_numba_rank(kernel, arr, *args):
@@ -49,6 +52,39 @@ def _bounded_numba_rank(kernel, arr, *args):
     if target_threads != current_threads:
         set_num_threads(target_threads)
     return kernel(arr, *args)
+
+
+def _axis1_native_rank_thread_cap(arr: np.ndarray) -> int:
+    """Return a size- and machine-aware cap for ephemeral native rank workers."""
+
+    nbytes = int(getattr(arr, "nbytes", 0))
+    size_cap = max(
+        1,
+        (nbytes + RANK_NATIVE_BYTES_PER_THREAD - 1) // RANK_NATIVE_BYTES_PER_THREAD,
+    )
+    return max(
+        1,
+        min(int(size_cap), RANK_NATIVE_THREAD_CAP, logical_cpu_count(), arr.shape[0]),
+    )
+
+
+def _native_axis1_rank_average_no_nan(arr: np.ndarray, ascending: bool):
+    """Run the optional C++/pthread rank kernel with bounded adaptive fan-out."""
+
+    thread_cap = _axis1_native_rank_thread_cap(arr)
+    threads = resolve_threadpool_workers(
+        arr.shape[0],
+        operation="rank",
+        operation_cap=thread_cap,
+        memory_bandwidth_cap=thread_cap,
+        cap=thread_cap,
+    )
+    result = native_axis1_rank_average_no_nan(
+        arr, ascending=ascending, threads=threads
+    )
+    if result is not None:
+        record_dispatch_path("native_cpp")
+    return result
 
 
 @njit(cache=True)
@@ -771,10 +807,14 @@ def optimized_rank(
                     and arr.shape[1] >= 128
                     and not np.isnan(arr).any()
                 ):
-                    result = _bounded_numba_rank(
-                        _rank_axis1_average_no_nan_fast, arr, ascending
-                    )
+                    result = _native_axis1_rank_average_no_nan(arr, ascending)
+                    if result is None:
+                        record_dispatch_path("parallel_numba")
+                        result = _bounded_numba_rank(
+                            _rank_axis1_average_no_nan_fast, arr, ascending
+                        )
                 else:
+                    record_dispatch_path("parallel_numba")
                     result = _bounded_numba_rank(
                         _rank_axis1_average, arr, ascending, na_opt
                     )
@@ -782,21 +822,25 @@ def optimized_rank(
                 result = _rank_axis1_average_serial(arr, ascending, na_opt)
         elif method == "min":
             if use_parallel:
+                record_dispatch_path("parallel_numba")
                 result = _bounded_numba_rank(_rank_axis1_min, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_min_serial(arr, ascending, na_opt)
         elif method == "max":
             if use_parallel:
+                record_dispatch_path("parallel_numba")
                 result = _bounded_numba_rank(_rank_axis1_max, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_max_serial(arr, ascending, na_opt)
         elif method == "first":
             if use_parallel:
+                record_dispatch_path("parallel_numba")
                 result = _bounded_numba_rank(_rank_axis1_first, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_first_serial(arr, ascending, na_opt)
         elif method == "dense":
             if use_parallel:
+                record_dispatch_path("parallel_numba")
                 result = _bounded_numba_rank(_rank_axis1_dense, arr, ascending, na_opt)
             else:
                 result = _rank_axis1_dense_serial(arr, ascending, na_opt)
@@ -805,6 +849,7 @@ def optimized_rank(
     else:  # axis == 0
         if method == "average":
             if use_parallel:
+                record_dispatch_path("parallel_numba")
                 result = _bounded_numba_rank(
                     _rank_axis0_average, arr, ascending, na_opt
                 )
@@ -817,6 +862,7 @@ def optimized_rank(
             )  # Ensure C-contiguous for row operations
             if method == "min":
                 if use_parallel:
+                    record_dispatch_path("parallel_numba")
                     result_t = _bounded_numba_rank(
                         _rank_axis1_min, arr_t, ascending, na_opt
                     )
@@ -824,6 +870,7 @@ def optimized_rank(
                     result_t = _rank_axis1_min_serial(arr_t, ascending, na_opt)
             elif method == "max":
                 if use_parallel:
+                    record_dispatch_path("parallel_numba")
                     result_t = _bounded_numba_rank(
                         _rank_axis1_max, arr_t, ascending, na_opt
                     )
@@ -831,6 +878,7 @@ def optimized_rank(
                     result_t = _rank_axis1_max_serial(arr_t, ascending, na_opt)
             elif method == "first":
                 if use_parallel:
+                    record_dispatch_path("parallel_numba")
                     result_t = _bounded_numba_rank(
                         _rank_axis1_first, arr_t, ascending, na_opt
                     )
@@ -838,6 +886,7 @@ def optimized_rank(
                     result_t = _rank_axis1_first_serial(arr_t, ascending, na_opt)
             elif method == "dense":
                 if use_parallel:
+                    record_dispatch_path("parallel_numba")
                     result_t = _bounded_numba_rank(
                         _rank_axis1_dense, arr_t, ascending, na_opt
                     )

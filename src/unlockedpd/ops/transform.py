@@ -4,6 +4,8 @@ This module provides Numba-accelerated transform operations (diff, pct_change, s
 with SHAPE-ADAPTIVE parallelization - automatically chooses row vs column parallel
 based on array dimensions for maximum CPU utilization.
 """
+import os
+
 import numpy as np
 from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
@@ -15,7 +17,7 @@ from .._compat import (
     wrap_result_fast,
     ensure_float64,
 )
-from .._resources import record_dispatch_path, resolve_threadpool_workers
+from .._resources import logical_cpu_count, record_dispatch_path, resolve_threadpool_workers
 from ._axis1_native import native_axis1_transform
 
 # Threshold for parallel vs serial execution (elements)
@@ -30,8 +32,33 @@ PARALLEL_THRESHOLD = 500_000
 # - 10000 rows with 64 CPUs = ~156 rows per CPU (good)
 MIN_ROWS_FOR_PARALLEL = 2000
 AXIS1_TRANSFORM_THREAD_CAP = 8
-AXIS1_NATIVE_DIFF_THREAD_CAP = 8
-AXIS1_NATIVE_PCT_THREAD_CAP = 8
+AXIS1_NATIVE_BYTES_PER_THREAD = 4 * 1024 * 1024
+AXIS1_NATIVE_DIFF_SMALL_CAP = 8
+AXIS1_NATIVE_DIFF_MEDIUM_CAP = 16
+AXIS1_NATIVE_DIFF_LARGE_CAP = 32
+AXIS1_NATIVE_PCT_SMALL_CAP = 8
+AXIS1_NATIVE_PCT_MEDIUM_CAP = 16
+AXIS1_NATIVE_PCT_LARGE_CAP = 32
+AXIS1_NATIVE_SMALL_FRAME_BYTES = 64 * 1024 * 1024
+AXIS1_NATIVE_MEDIUM_FRAME_BYTES = 512 * 1024 * 1024
+
+
+def _native_transforms_enabled() -> bool:
+    """Return whether the experimental native transform path is explicitly on."""
+
+    enabled = os.environ.get("UNLOCKEDPD_ENABLE_NATIVE_TRANSFORMS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    disabled = os.environ.get("UNLOCKEDPD_DISABLE_NATIVE_TRANSFORMS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return enabled and not disabled
 
 
 def _normalize_axis(axis) -> int:
@@ -106,12 +133,54 @@ def _bounded_axis1_transform(kernel, arr: np.ndarray, periods: int) -> np.ndarra
     return kernel(arr, periods)
 
 
-def _axis1_native_transform(arr: np.ndarray, periods: int, op: str):
-    """Run optional OpenMP native axis=1 kernels within a bounded thread cap."""
+def _axis1_native_operation_cap(arr: np.ndarray, op: str) -> int:
+    """Return a machine- and size-aware cap for ephemeral native workers.
 
-    thread_cap = (
-        AXIS1_NATIVE_DIFF_THREAD_CAP if op == "diff" else AXIS1_NATIVE_PCT_THREAD_CAP
+    Native axis=1 transforms are memory-bandwidth-bound.  More cores help only
+    until row chunks become too small or the memory subsystem saturates, so the
+    cap scales with frame bytes but remains below the machine's logical CPU
+    count.  The per-operation ceilings reflect measured saturation points:
+    ``diff`` benefits from 16 workers on larger frames, while ``pct_change`` is
+    divide-heavy and should stay conservative until the frame is substantially
+    larger.
+    """
+
+    nbytes = int(getattr(arr, "nbytes", 0))
+    if nbytes <= 0:
+        return 1
+
+    size_cap = max(
+        1,
+        (nbytes + AXIS1_NATIVE_BYTES_PER_THREAD - 1)
+        // AXIS1_NATIVE_BYTES_PER_THREAD,
     )
+    if op == "diff":
+        operation_cap = (
+            AXIS1_NATIVE_DIFF_SMALL_CAP
+            if nbytes < AXIS1_NATIVE_SMALL_FRAME_BYTES
+            else AXIS1_NATIVE_DIFF_MEDIUM_CAP
+            if nbytes < AXIS1_NATIVE_MEDIUM_FRAME_BYTES
+            else AXIS1_NATIVE_DIFF_LARGE_CAP
+        )
+    else:
+        operation_cap = (
+            AXIS1_NATIVE_PCT_SMALL_CAP
+            if nbytes < AXIS1_NATIVE_MEDIUM_FRAME_BYTES
+            else AXIS1_NATIVE_PCT_MEDIUM_CAP
+            if nbytes < 2 * AXIS1_NATIVE_MEDIUM_FRAME_BYTES
+            else AXIS1_NATIVE_PCT_LARGE_CAP
+        )
+
+    return max(
+        1,
+        min(int(size_cap), int(operation_cap), int(logical_cpu_count()), arr.shape[0]),
+    )
+
+
+def _axis1_native_transform(arr: np.ndarray, periods: int, op: str):
+    """Run optional native axis=1 kernels within an adaptive thread cap."""
+
+    thread_cap = _axis1_native_operation_cap(arr, op)
     threads = resolve_threadpool_workers(
         arr.shape[0],
         operation="transform",
@@ -210,7 +279,39 @@ def _pct_change_row_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
     return result
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, fastmath=True, cache=True)
+def _diff_axis1_parallel(arr: np.ndarray, periods: int = 1) -> np.ndarray:
+    """Compute diff(axis=1) across contiguous rows."""
+    n_rows, n_cols = arr.shape
+    result = np.empty((n_rows, n_cols), dtype=np.float64)
+
+    if periods > 0:
+        if periods >= n_cols:
+            for row in prange(n_rows):
+                for col in range(n_cols):
+                    result[row, col] = np.nan
+        else:
+            for row in prange(n_rows):
+                for col in range(periods):
+                    result[row, col] = np.nan
+                for col in range(periods, n_cols):
+                    result[row, col] = arr[row, col] - arr[row, col - periods]
+    else:
+        abs_periods = -periods
+        if abs_periods >= n_cols:
+            for row in prange(n_rows):
+                for col in range(n_cols):
+                    result[row, col] = np.nan
+        else:
+            for row in prange(n_rows):
+                for col in range(n_cols - abs_periods):
+                    result[row, col] = arr[row, col] - arr[row, col + abs_periods]
+                for col in range(n_cols - abs_periods, n_cols):
+                    result[row, col] = np.nan
+    return result
+
+
+@njit(parallel=True, fastmath=True, cache=True)
 def _pct_change_axis1_no_fill_parallel(
     arr: np.ndarray, periods: int = 1
 ) -> np.ndarray:
@@ -564,9 +665,12 @@ def optimized_diff(df, periods=1, axis=0):
                 and arr.size >= PARALLEL_THRESHOLD
                 and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
             ):
-                result = _axis1_native_transform(arr, periods, "diff")
-                if result is not None:
-                    return wrap_result_fast(result, df)
+                if _native_transforms_enabled():
+                    result = _axis1_native_transform(arr, periods, "diff")
+                    if result is not None:
+                        return wrap_result_fast(result, df)
+                result = _bounded_axis1_transform(_diff_axis1_parallel, arr, periods)
+                return wrap_result_fast(result, df)
             shifted = _call_original_dataframe_method(
                 df, "shift", periods=periods, axis=axis
             )
@@ -642,9 +746,10 @@ def optimized_pct_change(df, periods=1, fill_method='pad', limit=None, freq=None
                 and arr.size >= PARALLEL_THRESHOLD
                 and arr.shape[0] >= MIN_ROWS_FOR_PARALLEL
             ):
-                result = _axis1_native_transform(arr, periods, "pct")
-                if result is not None:
-                    return wrap_result_fast(result, df)
+                if _native_transforms_enabled():
+                    result = _axis1_native_transform(arr, periods, "pct")
+                    if result is not None:
+                        return wrap_result_fast(result, df)
                 result = _bounded_axis1_transform(
                     _pct_change_axis1_no_fill_parallel, arr, periods
                 )

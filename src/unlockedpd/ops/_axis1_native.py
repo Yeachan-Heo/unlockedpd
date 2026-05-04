@@ -26,6 +26,12 @@ _SOURCE = r"""
 #include <pthread.h>
 #include <stddef.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define UPD_IVDEP _Pragma("GCC ivdep")
+#else
+#define UPD_IVDEP
+#endif
+
 typedef struct {
     const double* in;
     double* out;
@@ -39,8 +45,8 @@ typedef struct {
 
 static void* axis1_worker(void* arg) {
     task_t* task = (task_t*)arg;
-    const double* in = task->in;
-    double* out = task->out;
+    const double* restrict in = task->in;
+    double* restrict out = task->out;
     size_t cols = task->cols;
     long periods = task->periods;
     size_t p = periods >= 0 ? (size_t)periods : (size_t)(-periods);
@@ -48,6 +54,7 @@ static void* axis1_worker(void* arg) {
     if (periods == 0) {
         for (size_t row = task->start; row < task->end; ++row) {
             size_t base = row * cols;
+            UPD_IVDEP
             for (size_t col = 0; col < cols; ++col) {
                 double value = in[base + col];
                 out[base + col] = task->op == 0 ? value - value : value / value - 1.0;
@@ -59,6 +66,7 @@ static void* axis1_worker(void* arg) {
     if (p >= cols) {
         for (size_t row = task->start; row < task->end; ++row) {
             size_t base = row * cols;
+            UPD_IVDEP
             for (size_t col = 0; col < cols; ++col) {
                 out[base + col] = NAN;
             }
@@ -73,10 +81,12 @@ static void* axis1_worker(void* arg) {
                 out[base + col] = NAN;
             }
             if (task->op == 0) {
+                UPD_IVDEP
                 for (size_t col = p; col < cols; ++col) {
                     out[base + col] = in[base + col] - in[base + col - p];
                 }
             } else {
+                UPD_IVDEP
                 for (size_t col = p; col < cols; ++col) {
                     out[base + col] = in[base + col] / in[base + col - p] - 1.0;
                 }
@@ -86,14 +96,17 @@ static void* axis1_worker(void* arg) {
         for (size_t row = task->start; row < task->end; ++row) {
             size_t base = row * cols;
             if (task->op == 0) {
+                UPD_IVDEP
                 for (size_t col = 0; col < cols - p; ++col) {
                     out[base + col] = in[base + col] - in[base + col + p];
                 }
             } else {
+                UPD_IVDEP
                 for (size_t col = 0; col < cols - p; ++col) {
                     out[base + col] = in[base + col] / in[base + col + p] - 1.0;
                 }
             }
+            UPD_IVDEP
             for (size_t col = cols - p; col < cols; ++col) {
                 out[base + col] = NAN;
             }
@@ -103,8 +116,8 @@ static void* axis1_worker(void* arg) {
 }
 
 static void run_axis1_transform(
-    const double* in,
-    double* out,
+    const double* restrict in,
+    double* restrict out,
     size_t rows,
     size_t cols,
     long periods,
@@ -156,6 +169,7 @@ void upd_axis1_pct_f64_pthread(
 ) {
     run_axis1_transform(in, out, rows, cols, periods, threads, 1);
 }
+
 """
 
 
@@ -190,6 +204,7 @@ def _compile_library(path: Path) -> bool:
             compiler,
             "-O3",
             "-march=native",
+            "-funroll-loops",
             "-fPIC",
             "-shared",
             "-pthread",

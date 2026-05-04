@@ -33,7 +33,9 @@ DENSE_AXIS0_THREAD_CAP = 32
 AXIS1_AGG_THREAD_CAP = 32
 AXIS1_DENSE_THREAD_CAP = 16
 AXIS1_DENSE_MINMAX_THREAD_CAP = 32
-AXIS0_BLAS_THREAD_CAP = 8
+AXIS0_BLAS_SMALL_THREAD_CAP = 8
+AXIS0_BLAS_MEDIUM_THREAD_CAP = 16
+AXIS0_BLAS_MEDIUM_FRAME_BYTES = 8 * 1024 * 1024
 _OPENBLAS_CONTROLS = None
 _OPENBLAS_CONTROLS_LOOKED_UP = False
 
@@ -101,6 +103,14 @@ def _openblas_thread_controls():
     return None
 
 
+def _axis0_blas_thread_cap(arr) -> int:
+    """Return a size-aware OpenBLAS cap for mid-sized dense axis=0 reducers."""
+
+    if int(getattr(arr, "nbytes", 0)) < AXIS0_BLAS_MEDIUM_FRAME_BYTES:
+        return AXIS0_BLAS_SMALL_THREAD_CAP
+    return AXIS0_BLAS_MEDIUM_THREAD_CAP
+
+
 def _axis0_blas_no_missing_reduction(arr, op, skipna):
     """Use bounded OpenBLAS GEMV for mid-sized dense axis=0 sum/mean."""
 
@@ -118,7 +128,7 @@ def _axis0_blas_no_missing_reduction(arr, op, skipna):
     get_threads, set_threads = controls
 
     old_threads = max(1, int(get_threads()))
-    target_threads = max(1, min(AXIS0_BLAS_THREAD_CAP, old_threads))
+    target_threads = max(1, min(_axis0_blas_thread_cap(arr), old_threads))
     ones = np.ones(arr.shape[0], dtype=np.float64)
 
     try:

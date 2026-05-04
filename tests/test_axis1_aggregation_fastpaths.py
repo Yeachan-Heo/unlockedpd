@@ -76,3 +76,15 @@ def test_axis0_mid_sized_sum_mean_can_use_bounded_blas_fast_path():
 
         tm.assert_series_equal(result, expected)
         assert get_last_selected_path() == "numpy_vectorized"
+
+
+def test_axis0_blas_thread_cap_scales_with_frame_size(monkeypatch):
+    monkeypatch.setattr(aggregation_ops, "AXIS0_BLAS_MEDIUM_FRAME_BYTES", 1024)
+    monkeypatch.setattr(aggregation_ops, "AXIS0_BLAS_SMALL_THREAD_CAP", 3)
+    monkeypatch.setattr(aggregation_ops, "AXIS0_BLAS_MEDIUM_THREAD_CAP", 7)
+
+    small = np.empty((8, 8), dtype=np.float64)
+    medium = np.empty((32, 8), dtype=np.float64)
+
+    assert aggregation_ops._axis0_blas_thread_cap(small) == 3
+    assert aggregation_ops._axis0_blas_thread_cap(medium) == 7

@@ -7,16 +7,17 @@ This module provides optimized rolling correlation and covariance using:
 """
 
 import numpy as np
-from numba import njit
+from numba import get_num_threads, njit, prange, set_num_threads
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 import os
 
 from .._compat import get_numeric_columns_fast, ensure_float64
-from .._resources import set_last_selected_path
+from .._resources import record_dispatch_path, resolve_threadpool_workers, set_last_selected_path
 from ._threadpool import make_threadpool_chunks
 
 PAIRWISE_THREADPOOL_CAP = 32
+PAIRWISE_NUMBA_THREAD_CAP = 32
 THREADPOOL_THRESHOLD = 10_000_000
 PAIRWISE_MEMORY_AVAILABLE_FRACTION = 0.75
 _FLOAT64_SIZE = np.dtype(np.float64).itemsize
@@ -136,6 +137,31 @@ def _pair_index_arrays(n_cols):
 def _pairwise_threadpool_chunks(n_pairs):
     """Use the shared ops ThreadPool wrapper for pairwise work chunking."""
     return make_threadpool_chunks(n_pairs, operation_cap=PAIRWISE_THREADPOOL_CAP)
+
+
+def _bounded_pairwise_numba(kernel, arr, *args):
+    """Run pairwise prange kernels with bounded, adaptive fan-out."""
+
+    from .._config import config
+
+    configured = config.num_threads
+    target_threads = (
+        min(configured, PAIRWISE_NUMBA_THREAD_CAP)
+        if configured > 0
+        else resolve_threadpool_workers(
+            arr.shape[1] * (arr.shape[1] + 1) // 2,
+            operation="pairwise",
+            operation_cap=PAIRWISE_NUMBA_THREAD_CAP,
+            memory_bandwidth_cap=PAIRWISE_NUMBA_THREAD_CAP,
+            cap=PAIRWISE_NUMBA_THREAD_CAP,
+        )
+    )
+    target_threads = max(1, int(target_threads))
+    current_threads = get_num_threads()
+    if target_threads != current_threads:
+        set_num_threads(target_threads)
+    record_dispatch_path("parallel_numba")
+    return kernel(arr, *args)
 
 
 def _pairwise_result_frame(result_2d, obj, numeric_columns):
@@ -422,6 +448,121 @@ def _rolling_corr_matrix_direct_nogil_chunk(
                 result_2d[base + j, i] = value
 
 
+@njit(parallel=True, cache=True)
+def _rolling_cov_matrix_direct_parallel(
+    arr,
+    pairs_i,
+    pairs_j,
+    window,
+    min_periods,
+    ddof,
+):
+    """Rolling covariance for all column pairs into final pandas shape."""
+    n_rows, n_cols = arr.shape
+    n_pairs = len(pairs_i)
+    result_2d = np.empty((n_rows * n_cols, n_cols), dtype=np.float64)
+    result_2d[:] = np.nan
+
+    for p in prange(n_pairs):
+        i = pairs_i[p]
+        j = pairs_j[p]
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                continue
+
+            start = max(0, row - window + 1)
+            sum_x = 0.0
+            sum_y = 0.0
+            sum_xy = 0.0
+            count = 0
+
+            for k in range(start, row + 1):
+                vx = arr[k, i]
+                vy = arr[k, j]
+                if not np.isnan(vx) and not np.isnan(vy):
+                    sum_x += vx
+                    sum_y += vy
+                    sum_xy += vx * vy
+                    count += 1
+
+            if count >= min_periods and count > ddof:
+                mean_x = sum_x / count
+                mean_y = sum_y / count
+                value = (sum_xy / count) - (mean_x * mean_y)
+                value *= count / (count - ddof)
+                base = row * n_cols
+                result_2d[base + i, j] = value
+                if i != j:
+                    result_2d[base + j, i] = value
+
+    return result_2d
+
+
+@njit(parallel=True, cache=True)
+def _rolling_corr_matrix_direct_parallel(
+    arr,
+    pairs_i,
+    pairs_j,
+    window,
+    min_periods,
+):
+    """Rolling correlation for all column pairs into final pandas shape."""
+    n_rows, n_cols = arr.shape
+    n_pairs = len(pairs_i)
+    result_2d = np.empty((n_rows * n_cols, n_cols), dtype=np.float64)
+    result_2d[:] = np.nan
+
+    for p in prange(n_pairs):
+        i = pairs_i[p]
+        j = pairs_j[p]
+        is_diagonal = i == j
+        for row in range(n_rows):
+            if row < min_periods - 1:
+                continue
+
+            start = max(0, row - window + 1)
+            sum_x = 0.0
+            sum_y = 0.0
+            sum_x2 = 0.0
+            sum_y2 = 0.0
+            sum_xy = 0.0
+            count = 0
+
+            for k in range(start, row + 1):
+                vx = arr[k, i]
+                vy = arr[k, j]
+                if not np.isnan(vx) and not np.isnan(vy):
+                    sum_x += vx
+                    sum_y += vy
+                    sum_x2 += vx * vx
+                    sum_y2 += vy * vy
+                    sum_xy += vx * vy
+                    count += 1
+
+            if count >= min_periods:
+                mean_x = sum_x / count
+                mean_y = sum_y / count
+                var_x = (sum_x2 / count) - (mean_x * mean_x)
+                var_y = (sum_y2 / count) - (mean_y * mean_y)
+
+                if is_diagonal:
+                    value = 1.0 if var_x > 1e-14 else np.nan
+                else:
+                    cov = (sum_xy / count) - (mean_x * mean_y)
+                    value = (
+                        cov / np.sqrt(var_x * var_y)
+                        if var_x > 1e-14 and var_y > 1e-14
+                        else np.nan
+                    )
+
+                base = row * n_cols
+                result_2d[base + i, j] = value
+                if i != j:
+                    result_2d[base + j, i] = value
+
+    return result_2d
+
+
 # ============================================================================
 # ThreadPool functions
 # ============================================================================
@@ -520,67 +661,31 @@ def _rolling_corr_pairwise_threadpool(arr, window, min_periods):
 
 def _rolling_cov_pairwise_threadpool_frame(arr, window, min_periods, ddof=1):
     """Rolling covariance in final 2D pandas shape without duplicate matrices."""
-    n_rows, n_cols = arr.shape
+    _, n_cols = arr.shape
     pairs_i, pairs_j = _pair_index_arrays(n_cols)
-    n_pairs = len(pairs_i)
-
-    result_2d = np.empty((n_rows * n_cols, n_cols), dtype=np.float64)
-    result_2d[:] = np.nan
-
-    workers, chunks = _pairwise_threadpool_chunks(n_pairs)
-
-    def process_chunk(args):
-        start_pair, end_pair = args
-        _rolling_cov_matrix_direct_nogil_chunk(
-            arr,
-            result_2d,
-            start_pair,
-            end_pair,
-            pairs_i,
-            pairs_j,
-            window,
-            min_periods,
-            ddof,
-            n_rows,
-            n_cols,
-        )
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        list(executor.map(process_chunk, chunks))
-
-    return result_2d
+    return _bounded_pairwise_numba(
+        _rolling_cov_matrix_direct_parallel,
+        arr,
+        pairs_i,
+        pairs_j,
+        window,
+        min_periods,
+        ddof,
+    )
 
 
 def _rolling_corr_pairwise_threadpool_frame(arr, window, min_periods):
     """Rolling correlation in final 2D pandas shape without duplicate matrices."""
-    n_rows, n_cols = arr.shape
+    _, n_cols = arr.shape
     pairs_i, pairs_j = _pair_index_arrays(n_cols)
-    n_pairs = len(pairs_i)
-
-    result_2d = np.empty((n_rows * n_cols, n_cols), dtype=np.float64)
-    result_2d[:] = np.nan
-
-    workers, chunks = _pairwise_threadpool_chunks(n_pairs)
-
-    def process_chunk(args):
-        start_pair, end_pair = args
-        _rolling_corr_matrix_direct_nogil_chunk(
-            arr,
-            result_2d,
-            start_pair,
-            end_pair,
-            pairs_i,
-            pairs_j,
-            window,
-            min_periods,
-            n_rows,
-            n_cols,
-        )
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        list(executor.map(process_chunk, chunks))
-
-    return result_2d
+    return _bounded_pairwise_numba(
+        _rolling_corr_matrix_direct_parallel,
+        arr,
+        pairs_i,
+        pairs_j,
+        window,
+        min_periods,
+    )
 
 
 # ============================================================================
