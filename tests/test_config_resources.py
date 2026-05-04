@@ -1,4 +1,5 @@
 """Tests for config and shared resource-policy helpers."""
+
 import importlib
 
 import numpy as np
@@ -31,7 +32,9 @@ def test_threadpool_workers_does_not_change_numba_threads(monkeypatch):
     import unlockedpd._config as config_module
 
     calls = []
-    monkeypatch.setattr(config_module.numba, "set_num_threads", lambda value: calls.append(value))
+    monkeypatch.setattr(
+        config_module.numba, "set_num_threads", lambda value: calls.append(value)
+    )
 
     cfg = config_module.UnlockedConfig()
     cfg.threadpool_workers = 4
@@ -58,22 +61,31 @@ def test_resolve_threadpool_workers_clamps_all_caps(monkeypatch):
 
     monkeypatch.setattr(resources.os, "cpu_count", lambda: 8)
 
-    assert resources.resolve_threadpool_workers(
-        work_units=100,
-        configured_workers=12,
-        operation_cap=5,
-        memory_bandwidth_cap=6,
-    ) == 5
-    assert resources.resolve_threadpool_workers(
-        work_units=3,
-        configured_workers=0,
-        memory_bandwidth_cap=32,
-    ) == 3
-    assert resources.resolve_threadpool_workers(
-        work_units=None,
-        configured_workers=0,
-        memory_bandwidth_cap=32,
-    ) == 8
+    assert (
+        resources.resolve_threadpool_workers(
+            work_units=100,
+            configured_workers=12,
+            operation_cap=5,
+            memory_bandwidth_cap=6,
+        )
+        == 5
+    )
+    assert (
+        resources.resolve_threadpool_workers(
+            work_units=3,
+            configured_workers=0,
+            memory_bandwidth_cap=32,
+        )
+        == 3
+    )
+    assert (
+        resources.resolve_threadpool_workers(
+            work_units=None,
+            configured_workers=0,
+            memory_bandwidth_cap=32,
+        )
+        == 8
+    )
 
 
 def test_memory_estimates_and_budget_helpers():
@@ -82,12 +94,20 @@ def test_memory_estimates_and_budget_helpers():
     arr = np.zeros((2, 3), dtype=np.float32)
     assert resources.estimate_array_nbytes(arr) == 24
     assert resources.estimate_array_nbytes((2, 3), dtype=np.float64) == 48
-    assert resources.estimate_operation_nbytes((2, 3), dtype=np.float64, inputs=1, outputs=2) == 144
+    assert (
+        resources.estimate_operation_nbytes(
+            (2, 3), dtype=np.float64, inputs=1, outputs=2
+        )
+        == 144
+    )
 
     assert resources.overhead_ratio(12, 3) == 4
-    assert resources.check_resource_budget(
-        memory_overhead=4,
-        cpu_overhead=7,
-        max_memory_overhead=6,
-        max_cpu_overhead=6,
-    ).pass_budget is False
+    assert (
+        resources.check_resource_budget(
+            memory_overhead=4,
+            cpu_overhead=7,
+            max_memory_overhead=6,
+            max_cpu_overhead=6,
+        ).pass_budget
+        is False
+    )

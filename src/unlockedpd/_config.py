@@ -77,7 +77,7 @@ def _coerce_positive_float(value: object, name: str) -> float:
     return parsed
 
 
-def _parse_warmup(value: Optional[str]) -> str:
+def _parse_warmup(value: Optional[str], *, strict: bool = False) -> str:
     warmup = (value or "lazy").strip().lower()
     aliases = {
         "0": "none",
@@ -90,9 +90,14 @@ def _parse_warmup(value: Optional[str]) -> str:
         "on": "eager",
         "full": "eager",
         "auto": "lazy",
+        "manual": "lazy",
     }
     warmup = aliases.get(warmup, warmup)
-    return warmup if warmup in {"none", "lazy", "eager"} else "lazy"
+    if warmup in {"none", "lazy", "eager"}:
+        return warmup
+    if strict:
+        raise ValueError("warmup must be one of: none, lazy, eager")
+    return "lazy"
 
 
 @dataclass
@@ -254,7 +259,7 @@ class UnlockedConfig:
     @warmup.setter
     def warmup(self, value: Optional[str]) -> None:
         with self._lock:
-            self._warmup = _parse_warmup(value)
+            self._warmup = _parse_warmup(value, strict=True)
 
     def apply_thread_config(self) -> None:
         """Apply the current Numba thread configuration."""

@@ -3,15 +3,19 @@
 This module triggers JIT compilation at import time so that
 the first actual call doesn't incur compilation overhead.
 """
+
 import numpy as np
 
 
 def warmup_rolling():
     """Pre-compile rolling operation functions."""
     from .ops.rolling import (
-        _rolling_sum_2d, _rolling_sum_2d_serial,
-        _rolling_mean_2d, _rolling_mean_2d_serial,
-        _rolling_sum_2d_centered, _rolling_mean_2d_centered,
+        _rolling_sum_2d,
+        _rolling_sum_2d_serial,
+        _rolling_mean_2d,
+        _rolling_mean_2d_serial,
+        _rolling_sum_2d_centered,
+        _rolling_mean_2d_centered,
     )
 
     # Create small dummy array for compilation
@@ -38,9 +42,12 @@ def warmup_rolling():
     # Try to compile Welford algorithms if available
     try:
         from .ops._welford import (
-            rolling_std_welford_parallel, rolling_std_welford_serial,
-            rolling_var_welford_parallel, rolling_var_welford_serial,
+            rolling_std_welford_parallel,
+            rolling_std_welford_serial,
+            rolling_var_welford_parallel,
+            rolling_var_welford_serial,
         )
+
         rolling_std_welford_parallel(dummy, window, min_periods, 1)
         rolling_std_welford_serial(dummy, window, min_periods, 1)
         rolling_var_welford_parallel(dummy, window, min_periods, 1)
@@ -51,9 +58,12 @@ def warmup_rolling():
     # Try to compile deque algorithms if available
     try:
         from .ops._minmax_deque import (
-            rolling_min_deque_parallel, rolling_min_deque_serial,
-            rolling_max_deque_parallel, rolling_max_deque_serial,
+            rolling_min_deque_parallel,
+            rolling_min_deque_serial,
+            rolling_max_deque_parallel,
+            rolling_max_deque_serial,
         )
+
         rolling_min_deque_parallel(dummy, window, min_periods)
         rolling_min_deque_serial(dummy, window, min_periods)
         rolling_max_deque_parallel(dummy, window, min_periods)
@@ -64,9 +74,12 @@ def warmup_rolling():
     # Warmup nogil chunk kernels (ThreadPool workers)
     try:
         from .ops.rolling import (
-            _rolling_mean_nogil_chunk, _rolling_sum_nogil_chunk,
-            _rolling_std_nogil_chunk, _rolling_var_nogil_chunk,
-            _rolling_min_nogil_chunk, _rolling_max_nogil_chunk,
+            _rolling_mean_nogil_chunk,
+            _rolling_sum_nogil_chunk,
+            _rolling_std_nogil_chunk,
+            _rolling_var_nogil_chunk,
+            _rolling_min_nogil_chunk,
+            _rolling_max_nogil_chunk,
             _rolling_count_nogil_chunk,
         )
 
@@ -89,9 +102,12 @@ def warmup_rolling():
 def warmup_rank():
     """Pre-compile rank operation functions."""
     from .ops.rank import (
-        _rank_axis1_average, _rank_axis0_average,
-        _rank_axis1_min, _rank_axis1_max,
-        _rank_axis1_first, _rank_axis1_dense,
+        _rank_axis1_average,
+        _rank_axis0_average,
+        _rank_axis1_min,
+        _rank_axis1_max,
+        _rank_axis1_first,
+        _rank_axis1_dense,
     )
 
     dummy = np.zeros((10, 4), dtype=np.float64)
@@ -109,8 +125,10 @@ def warmup_rank():
     # Try serial versions if available
     try:
         from .ops.rank import (
-            _rank_axis1_average_serial, _rank_axis0_average_serial,
+            _rank_axis1_average_serial,
+            _rank_axis0_average_serial,
         )
+
         _rank_axis1_average_serial(dummy, True, 0)
         _rank_axis0_average_serial(dummy, True, 0)
     except Exception:
@@ -146,10 +164,14 @@ def warmup_cumulative():
     """Pre-compile cumulative operation functions."""
     try:
         from .ops.cumulative import (
-            _cumsum_2d, _cumsum_2d_serial,
-            _cumprod_2d, _cumprod_2d_serial,
-            _cummin_2d, _cummin_2d_serial,
-            _cummax_2d, _cummax_2d_serial,
+            _cumsum_2d,
+            _cumsum_2d_serial,
+            _cumprod_2d,
+            _cumprod_2d_serial,
+            _cummin_2d,
+            _cummin_2d_serial,
+            _cummax_2d,
+            _cummax_2d_serial,
         )
 
         dummy = np.zeros((10, 4), dtype=np.float64)
@@ -170,12 +192,18 @@ def warmup_expanding():
     """Pre-compile expanding operation functions."""
     try:
         from .ops.expanding import (
-            _expanding_sum_2d, _expanding_sum_2d_serial,
-            _expanding_mean_2d, _expanding_mean_2d_serial,
-            _expanding_std_2d, _expanding_std_2d_serial,
-            _expanding_var_2d, _expanding_var_2d_serial,
-            _expanding_min_2d, _expanding_min_2d_serial,
-            _expanding_max_2d, _expanding_max_2d_serial,
+            _expanding_sum_2d,
+            _expanding_sum_2d_serial,
+            _expanding_mean_2d,
+            _expanding_mean_2d_serial,
+            _expanding_std_2d,
+            _expanding_std_2d_serial,
+            _expanding_var_2d,
+            _expanding_var_2d_serial,
+            _expanding_min_2d,
+            _expanding_min_2d_serial,
+            _expanding_max_2d,
+            _expanding_max_2d_serial,
         )
 
         dummy = np.zeros((10, 4), dtype=np.float64)
@@ -199,9 +227,12 @@ def warmup_expanding():
     # Warmup nogil chunk kernels (ThreadPool workers)
     try:
         from .ops.expanding import (
-            _expanding_mean_nogil_chunk, _expanding_sum_nogil_chunk,
-            _expanding_std_nogil_chunk, _expanding_var_nogil_chunk,
-            _expanding_min_nogil_chunk, _expanding_max_nogil_chunk,
+            _expanding_mean_nogil_chunk,
+            _expanding_sum_nogil_chunk,
+            _expanding_std_nogil_chunk,
+            _expanding_var_nogil_chunk,
+            _expanding_min_nogil_chunk,
+            _expanding_max_nogil_chunk,
             _expanding_count_nogil_chunk,
         )
 
@@ -225,9 +256,12 @@ def warmup_ewm():
     """Pre-compile EWM operation functions."""
     try:
         from .ops.ewm import (
-            _ewm_mean_2d, _ewm_mean_2d_serial,
-            _ewm_var_2d, _ewm_var_2d_serial,
-            _ewm_std_2d, _ewm_std_2d_serial,
+            _ewm_mean_2d,
+            _ewm_mean_2d_serial,
+            _ewm_var_2d,
+            _ewm_var_2d_serial,
+            _ewm_std_2d,
+            _ewm_std_2d_serial,
         )
 
         dummy = np.zeros((10, 4), dtype=np.float64)
@@ -247,12 +281,18 @@ def warmup_stats():
     """Pre-compile stats operation functions."""
     try:
         from .ops.stats import (
-            _skew_2d_axis0, _skew_2d_axis0_serial,
-            _skew_2d_axis1, _skew_2d_axis1_serial,
-            _kurt_2d_axis0, _kurt_2d_axis0_serial,
-            _kurt_2d_axis1, _kurt_2d_axis1_serial,
-            _sem_2d_axis0, _sem_2d_axis0_serial,
-            _sem_2d_axis1, _sem_2d_axis1_serial,
+            _skew_2d_axis0,
+            _skew_2d_axis0_serial,
+            _skew_2d_axis1,
+            _skew_2d_axis1_serial,
+            _kurt_2d_axis0,
+            _kurt_2d_axis0_serial,
+            _kurt_2d_axis1,
+            _kurt_2d_axis1_serial,
+            _sem_2d_axis0,
+            _sem_2d_axis0_serial,
+            _sem_2d_axis1,
+            _sem_2d_axis1_serial,
         )
 
         dummy = np.zeros((10, 4), dtype=np.float64)
@@ -277,8 +317,10 @@ def warmup_pairwise():
     """Pre-compile pairwise operation functions."""
     try:
         from .ops.pairwise import (
-            _corr_matrix, _corr_matrix_serial,
-            _cov_matrix, _cov_matrix_serial,
+            _corr_matrix,
+            _corr_matrix_serial,
+            _cov_matrix,
+            _cov_matrix_serial,
         )
 
         dummy = np.zeros((10, 4), dtype=np.float64)
@@ -295,9 +337,15 @@ def warmup_transform():
     """Pre-compile transform operation functions."""
     try:
         from .ops.transform import (
-            _diff_row_parallel, _diff_col_parallel, _diff_serial,
-            _pct_change_row_parallel, _pct_change_col_parallel, _pct_change_serial,
-            _shift_row_parallel, _shift_col_parallel, _shift_serial,
+            _diff_row_parallel,
+            _diff_col_parallel,
+            _diff_serial,
+            _pct_change_row_parallel,
+            _pct_change_col_parallel,
+            _pct_change_serial,
+            _shift_row_parallel,
+            _shift_col_parallel,
+            _shift_serial,
         )
 
         dummy = np.zeros((10, 4), dtype=np.float64)
